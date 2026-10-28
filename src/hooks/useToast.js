@@ -1,0 +1,12 @@
+import { useContext } from 'react';
+import { ToastContext } from '../context/ToastContext';
+
+export function useToast() {
+  const ctx = useContext(ToastContext);
+  if (!ctx) throw new Error('useToast must be used inside <ToastProvider>');
+  return ctx.toast;
+}
+
+export function useToastList() {
+  return useContext(ToastContext).toasts;
+}
