@@ -88,6 +88,7 @@ function ImageStage({ file, shared, zoom, setZoom, box }) {
             layoutId={shared ? `media-${file.id}` : undefined}
             src={thumbUrl}
             alt=""
+            referrerPolicy="no-referrer"
             draggable={false}
             onLoad={(e) => !natural && setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
             className="absolute inset-0 h-full w-full rounded-tile object-contain"
@@ -134,6 +135,7 @@ function VideoStage({ file, shared, box }) {
               layoutId={shared ? `media-${file.id}` : undefined}
               src={thumbUrl}
               alt=""
+              referrerPolicy="no-referrer"
               className="absolute inset-0 h-full w-full rounded-tile object-contain opacity-60"
             />
           )}

@@ -29,6 +29,7 @@ export default function MediaThumb({ file, size = 480, className = '', layoutId,
           layoutId={layoutId}
           src={url}
           alt={file.name}
+          referrerPolicy="no-referrer"
           draggable={false}
           className="h-full w-full object-cover"
           initial={{ opacity: 0 }}

@@ -6,7 +6,7 @@ Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `rea
 
 ## Features
 
-- **Sign in with Google** (implicit/token flow). The access token stays in memory only. When it expires, or Drive returns 401, the app silently asks for a new token and replays the request. If that's blocked, a "Session expired, Continue" prompt appears.
+- **Sign in with Google** (implicit/token flow). The access token is kept in `sessionStorage`, so a page reload keeps you signed in; closing the tab (or signing out) clears it. When it expires, or Drive returns 401, the app silently asks for a new token and replays the request. If that's blocked, a "Session expired, Continue" prompt appears.
 - **Least privilege**: the app uses only the `drive.file` scope, so it can see files it created and nothing else in your Drive.
 - **Browse**: folders and nested subfolders, breadcrumbs, grid and list views, sort by name, date or size, search by name across the whole gallery, an All / Images / Videos filter, and infinite scroll with Drive `pageToken`s.
 - **Upload**: drag and drop anywhere on the page, or use the file picker. Up to 3 uploads run at once, each with progress, speed, cancel and retry.
