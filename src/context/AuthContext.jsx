@@ -12,11 +12,43 @@ const DRIVE_SCOPE = SCOPES[0];
 const EXPIRY_MARGIN_MS = 60_000;
 const SILENT_TIMEOUT_MS = 8_000;
 
+// The session survives a page reload but not closing the tab (sessionStorage is per-tab).
+const SESSION_KEY = 'dg-session';
+
+/** Restore { accessToken, expiresAt, user } if the token still has life left. */
+function readSession() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SESSION_KEY));
+    if (s?.accessToken && s.user && Date.now() < s.expiresAt - EXPIRY_MARGIN_MS) return s;
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return null;
+}
+
+function saveSession(token, user) {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...token, user }));
+  } catch {
+    /* storage unavailable: the session just won't survive a reload */
+  }
+}
+
+function clearSession() {
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Auth state for the implicit (token) flow.
  *
- * The access token lives only in a ref — never in localStorage/sessionStorage —
- * so it disappears when the tab closes. Implicit-flow tokens can't be refreshed
+ * The access token lives in a ref, mirrored to sessionStorage so a reload keeps
+ * the user signed in; it is gone when the tab closes (never in localStorage),
+ * and it expires after about an hour anyway. Implicit-flow tokens can't be refreshed
  * with a refresh token; instead we ask Google Identity Services for a new one:
  *   1. silently (prompt: 'none'), which works when the user already consented
  *      and the browser allows the brief popup, then
@@ -27,9 +59,10 @@ const SILENT_TIMEOUT_MS = 8_000;
  */
 export function AuthProvider({ children }) {
   const { scriptLoadedSuccessfully } = useGoogleOAuth();
-  const tokenRef = useRef(null); // { accessToken, expiresAt }
-  const [user, setUser] = useState(null);
-  const [status, setStatus] = useState('signedOut'); // signedOut | signingIn | ready
+  const [restored] = useState(readSession);
+  const tokenRef = useRef(restored && { accessToken: restored.accessToken, expiresAt: restored.expiresAt }); // { accessToken, expiresAt }
+  const [user, setUser] = useState(restored?.user || null);
+  const [status, setStatus] = useState(restored ? 'ready' : 'signedOut'); // signedOut | signingIn | ready
   const [authError, setAuthError] = useState(null);
   const [sessionExpired, setSessionExpired] = useState(false);
 
@@ -65,13 +98,16 @@ export function AuthProvider({ children }) {
       setSessionExpired(false);
 
       if (pendingRef.current) {
+        if (userRef.current) saveSession(tokenRef.current, userRef.current);
         settlePending(null, resp.access_token);
         return;
       }
       // First sign-in: load the profile for the top bar.
       try {
         const info = await getUserInfo();
-        setUser({ name: info.name || info.email, email: info.email, picture: info.picture });
+        const profile = { name: info.name || info.email, email: info.email, picture: info.picture };
+        saveSession(tokenRef.current, profile);
+        setUser(profile);
         setStatus('ready');
       } catch (e) {
         tokenRef.current = null;
@@ -120,6 +156,8 @@ export function AuthProvider({ children }) {
 
   /** Force a new token. Concurrent callers share the same promise. */
   const refreshToken = useCallback(() => {
+    // Signed out: a late request must not reopen Google sign-in or the "Session expired" dialog.
+    if (!tokenRef.current) return Promise.reject(new DriveError('Signed out', { status: 401, reason: 'unauthenticated' }));
     if (pendingRef.current) return pendingRef.current.promise;
     let resolve, reject;
     const promise = new Promise((res, rej) => {
@@ -153,6 +191,7 @@ export function AuthProvider({ children }) {
   const signOut = useCallback(() => {
     googleLogout();
     tokenRef.current = null;
+    clearSession();
     settlePending(new DriveError('Signed out', { status: 401, reason: 'unauthenticated' }));
     setSessionExpired(false);
     setUser(null);
