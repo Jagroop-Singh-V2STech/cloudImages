@@ -1,56 +1,45 @@
 import { motion } from 'framer-motion';
-import { AlertTriangle, FolderPlus, ImagePlus, SearchX, Upload } from 'lucide-react';
+import { AlertTriangle, Heart, History, ImagePlus, SearchX } from 'lucide-react';
 
 const variants = {
-  empty: { icon: ImagePlus, title: 'This folder is empty', text: 'Drag photos and videos anywhere on the page, or use the Upload button.' },
-  search: { icon: SearchX, title: 'No matches', text: 'Try a different name, or clear the type filter.' },
+  empty: { icon: ImagePlus, title: 'Nothing here yet', text: 'Drag photos and videos anywhere on the page, or use Upload.' },
+  search: { icon: SearchX, title: 'No results', text: 'Try a different name, or switch the filter back to All.' },
   filtered: { icon: SearchX, title: 'Nothing of that type here', text: 'Switch the filter back to All to see everything in this folder.' },
+  recents: { icon: History, title: 'No recents yet', text: 'Photos and videos you open or upload in this browser show up here.' },
+  favorites: { icon: Heart, title: 'No favorites yet', text: 'Choose Add to Favorites from a photo’s menu or the viewer to keep it here.' },
   error: { icon: AlertTriangle, title: 'Couldn’t load this folder', text: 'Check your connection and try again.' },
 };
 
-/** Friendly empty state: a layered icon "illustration" plus a message and actions. */
+/** Quiet, centered message with a single icon and the next sensible action. */
 export default function EmptyState({ kind = 'empty', message, onUpload, onNewFolder, onRetry }) {
   const v = variants[kind];
   const Icon = v.icon;
-  const tone = kind === 'error' ? 'text-red-500 bg-red-50 dark:bg-red-500/10' : 'text-brand-600 bg-brand-50 dark:bg-brand-500/15 dark:text-brand-300';
 
   return (
     <motion.div
-      className="flex flex-col items-center justify-center px-6 py-20 text-center"
+      className="flex flex-col items-center justify-center px-6 py-24 text-center"
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', stiffness: 220, damping: 26 }}
+      transition={{ duration: 0.5, ease: [0.25, 0.1, 0.25, 1] }}
     >
-      <div className="relative mb-6 h-28 w-28">
-        <motion.div
-          className="absolute inset-0 rounded-[32px] bg-gradient-to-br from-brand-100 to-indigo-100 dark:from-brand-500/10 dark:to-indigo-500/10"
-          animate={{ rotate: [6, 10, 6] }}
-          transition={{ duration: 6, repeat: Infinity, ease: 'easeInOut' }}
-        />
-        <motion.div
-          className="absolute inset-0 rounded-[32px] bg-gradient-to-br from-sky-100 to-emerald-50 dark:from-sky-500/10 dark:to-emerald-500/5"
-          animate={{ rotate: [-6, -10, -6] }}
-          transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-        />
-        <div className={`absolute inset-3 flex items-center justify-center rounded-3xl shadow-card ring-1 ring-black/5 ${tone}`}>
-          <Icon className="h-10 w-10" strokeWidth={1.6} />
-        </div>
+      <div className={`mb-6 flex h-16 w-16 items-center justify-center rounded-full ${kind === 'error' ? 'bg-danger-soft text-danger' : 'bg-surface text-muted'}`}>
+        <Icon className="h-7 w-7" strokeWidth={1.5} aria-hidden />
       </div>
-      <h3 className="text-lg font-semibold">{v.title}</h3>
-      <p className="mt-1 max-w-sm text-sm text-slate-500 dark:text-slate-400">{message || v.text}</p>
-      <div className="mt-6 flex flex-wrap justify-center gap-2">
+      <h2 className="text-[24px]">{v.title}</h2>
+      <p className="mt-2 max-w-sm text-[17px] text-muted">{message || v.text}</p>
+      <div className="mt-8 flex flex-wrap justify-center gap-3">
         {kind === 'empty' && onUpload && (
-          <button className="btn-primary" onClick={onUpload}>
-            <Upload className="h-4 w-4" /> Upload media
+          <button className="btn-primary h-11" onClick={onUpload}>
+            Upload
           </button>
         )}
         {kind === 'empty' && onNewFolder && (
-          <button className="btn-secondary" onClick={onNewFolder}>
-            <FolderPlus className="h-4 w-4" /> New folder
+          <button className="btn-secondary h-11" onClick={onNewFolder}>
+            New folder
           </button>
         )}
         {kind === 'error' && onRetry && (
-          <button className="btn-secondary" onClick={onRetry}>
+          <button className="btn-secondary h-11" onClick={onRetry}>
             Try again
           </button>
         )}

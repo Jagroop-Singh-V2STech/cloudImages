@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Film, ImageIcon, LayoutGrid } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import {
   createFolder,
   downloadFile,
@@ -19,11 +19,12 @@ import {
   trashFile,
 } from './lib/drive';
 import { invalidate } from './lib/mediaCache';
-import { formatBytes, isFolder, plural } from './lib/format';
+import { formatBytes, isFolder, isImage, isVideo, plural } from './lib/format';
 import { useDriveFolder } from './hooks/useDriveFolder';
 import { useSelection } from './hooks/useSelection';
 import { useUploadQueue } from './hooks/useUploadQueue';
 import { useToast } from './hooks/useToast';
+import { useCollection } from './hooks/useCollection';
 import { useTheme } from './hooks/useTheme';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
@@ -39,17 +40,21 @@ import MoveDialog from './components/MoveDialog';
 import RenameDialog from './components/RenameDialog';
 import ConfirmDialog from './components/ConfirmDialog';
 import DropOverlay from './components/DropOverlay';
-import { MobileActions, SelectionBar } from './components/SelectionBar';
+import { SelectionBar } from './components/SelectionBar';
 import { GridSkeleton, ListSkeleton } from './components/Skeletons';
 import { Spinner } from './components/ui';
 import Logo from './components/Logo';
 
 const ACCEPT = { 'image/*': [], 'video/*': [] };
-const FILTERS = [
-  { id: 'all', label: 'All', icon: LayoutGrid },
-  { id: 'images', label: 'Images', icon: ImageIcon },
-  { id: 'videos', label: 'Videos', icon: Film },
-];
+const ROOT_LABEL = 'All media';
+
+/** "12 photos and 3 videos" (with a "+" while more pages are available). */
+function countLabel(items, more) {
+  const photos = items.filter(isImage).length;
+  const videos = items.filter(isVideo).length;
+  const n = (k) => `${k.toLocaleString()}${more ? '+' : ''}`;
+  return `${n(photos)} ${photos === 1 && !more ? 'photo' : 'photos'} and ${n(videos)} ${videos === 1 && !more ? 'video' : 'videos'}`;
+}
 
 /** A tiny localStorage-backed state for per-viewer UI preferences (never tokens). */
 function usePref(key, initial) {
@@ -120,13 +125,13 @@ export default function Gallery() {
 
   if (!root) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">
-        <motion.div animate={{ scale: [1, 1.06, 1] }} transition={{ duration: 1.6, repeat: Infinity }}>
-          <Logo className="h-12 w-12" />
+      <div className="flex min-h-screen flex-col items-center justify-center gap-5 p-6 text-center">
+        <motion.div animate={{ scale: [1, 1.05, 1] }} transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}>
+          <Logo className="h-14 w-14 rounded-logo" iconClassName="h-7 w-7" />
         </motion.div>
         {error ? (
           <>
-            <p className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            <p role="alert" className="flex items-center gap-2 text-[15px] text-danger">
               <AlertTriangle className="h-4 w-4" /> {friendlyError(error)}
             </p>
             <button className="btn-secondary" onClick={init}>
@@ -134,8 +139,8 @@ export default function Gallery() {
             </button>
           </>
         ) : (
-          <p className="flex items-center gap-2 text-sm text-slate-500">
-            <Spinner /> Preparing your DriveGallery folder…
+          <p className="flex items-center gap-2 text-[15px] text-muted">
+            <Spinner /> Preparing your library…
           </p>
         )}
       </div>
@@ -160,8 +165,9 @@ function Workspace({ root }) {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [original, setOriginal] = usePref('original', false);
-  const [collapsed, setCollapsed] = usePref('sidebar-collapsed', false);
   const [mobileNav, setMobileNav] = useState(false);
+  // 'folder' browses `path`; 'recents' and 'favorites' show per-browser collections.
+  const [section, setSection] = useState('folder');
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput.trim()), 300);
@@ -169,10 +175,21 @@ function Workspace({ root }) {
   }, [searchInput]);
 
   const folder = useDriveFolder({ folderId: current.id, search, filter, sort: sortPref.sort, direction: sortPref.direction, rootId: root.id });
-  const ids = useMemo(() => folder.items.map((f) => f.id), [folder.items]);
+  const inCollection = section !== 'folder' && !search;
+  const recents = useCollection('recents', { max: 60, active: section === 'recents' });
+  const favorites = useCollection('favorites', { active: section === 'favorites' });
+  const collection = section === 'recents' ? recents : favorites;
+
+  const items = useMemo(() => {
+    if (!inCollection) return folder.items;
+    return collection.items.filter((f) => (filter === 'images' ? isImage(f) : filter === 'videos' ? isVideo(f) : isImage(f) || isVideo(f)));
+  }, [inCollection, folder.items, collection.items, filter]);
+  const loading = inCollection ? collection.loading && collection.items.length === 0 : folder.loading;
+
+  const ids = useMemo(() => items.map((f) => f.id), [items]);
   const selection = useSelection(ids);
-  const media = useMemo(() => folder.items.filter((f) => !isFolder(f)), [folder.items]);
-  const byId = useMemo(() => new Map(folder.items.map((f) => [f.id, f])), [folder.items]);
+  const media = useMemo(() => items.filter((f) => !isFolder(f)), [items]);
+  const byId = useMemo(() => new Map(items.map((f) => [f.id, f])), [items]);
 
   // ---- Sidebar folders & quota ----
   const [rootFolders, setRootFolders] = useState([]);
@@ -196,7 +213,7 @@ function Workspace({ root }) {
   const [lightbox, setLightbox] = useState(null); // { index, originId }
   const [menu, setMenu] = useState(null); // { x, y, items }
   const [renameItem, setRenameItem] = useState(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(null); // parent crumb for "New folder"
   const [moveItems, setMoveItems] = useState(null);
   const [confirm, setConfirm] = useState(null); // { items }
   const anyDialog = Boolean(lightbox || menu || renameItem || creating || moveItems || confirm);
@@ -204,7 +221,7 @@ function Workspace({ root }) {
   // Scroll to top when the folder/search changes.
   useEffect(() => {
     window.scrollTo({ top: 0 });
-  }, [current.id, search, filter]);
+  }, [current.id, search, filter, section]);
 
   /* ---------------- Uploads ---------------- */
 
@@ -219,6 +236,7 @@ function Workspace({ root }) {
   const queue = useUploadQueue({
     onUploaded: (file, folderId) => {
       if (folderId === current.id || search) folder.add(file);
+      recents.add(file);
       refreshQuotaSoon();
     },
     onError: (e, item) => {
@@ -236,7 +254,7 @@ function Workspace({ root }) {
         return;
       }
       const n = queue.addFiles(files, current.id, { compress: !original });
-      toast.info(`Uploading ${plural(n, 'file')} to ${current.id === root.id ? 'My Gallery' : current.name}`, {
+      toast.info(`Uploading ${plural(n, 'file')} to ${current.id === root.id ? ROOT_LABEL : current.name}`, {
         description: formatBytes(bytes) + (original ? ' · original quality' : ''),
         duration: 2500,
       });
@@ -262,6 +280,7 @@ function Workspace({ root }) {
         // Search results can come from anywhere; rebuild the breadcrumb path.
         setSearchInput('');
         setSearch('');
+        setSection('folder');
         const p = await getFolderPath(f.id, root.id).catch(() => null);
         setPath(p ? p.map((c, i) => (i === 0 ? rootCrumb : c)) : [rootCrumb, { id: f.id, name: f.name }]);
       } else {
@@ -275,24 +294,34 @@ function Workspace({ root }) {
     (f) => {
       setSearchInput('');
       setSearch('');
+      setSection('folder');
       setPath([rootCrumb, { id: f.id, name: f.name }]);
     },
     [rootCrumb],
   );
 
-  const goRoot = useCallback(() => {
-    setSearchInput('');
-    setSearch('');
-    setPath([rootCrumb]);
-  }, [rootCrumb]);
+  /** Sidebar library links: 'all' | 'recents' | 'favorites'. */
+  const navigate = useCallback(
+    (target) => {
+      setSearchInput('');
+      setSearch('');
+      if (target === 'all') {
+        setSection('folder');
+        setPath([rootCrumb]);
+      } else setSection(target);
+    },
+    [rootCrumb],
+  );
 
   const openItem = useCallback(
     (item) => {
       if (isFolder(item)) return openFolder(item);
       const index = media.findIndex((m) => m.id === item.id);
       if (index >= 0) setLightbox({ index, originId: item.id });
+      // Already in Recents while browsing it; re-adding would reorder under the open viewer.
+      if (!(section === 'recents' && !search)) recents.add(item);
     },
-    [media, openFolder],
+    [media, openFolder, recents, section, search],
   );
 
   /* ---------------- Download ---------------- */
@@ -369,17 +398,18 @@ function Workspace({ root }) {
 
   const doCreateFolder = useCallback(
     async (name) => {
+      const parent = creating || current;
       try {
-        const f = await createFolder(name, current.id);
+        const f = await createFolder(name, parent.id);
         if (!search) folder.add(f);
-        if (current.id === root.id) refreshRootFolders();
+        if (parent.id === root.id) refreshRootFolders();
         toast.success(`Created “${name}”`);
       } catch (e) {
         toast.error('Couldn’t create folder', { description: friendlyError(e) });
         throw e;
       }
     },
-    [current.id, root.id, search, folder, refreshRootFolders, toast],
+    [creating, current, root.id, search, folder, refreshRootFolders, toast],
   );
 
   const doRename = useCallback(
@@ -387,6 +417,8 @@ function Workspace({ root }) {
       try {
         const updated = await renameFile(item.id, name);
         folder.patch(item.id, updated);
+        recents.patch(item.id, updated);
+        favorites.patch(item.id, updated);
         if (isFolder(item)) {
           setPath((p) => p.map((c) => (c.id === item.id ? { ...c, name } : c)));
           setRootFolders((list) => list.map((f) => (f.id === item.id ? { ...f, name } : f)));
@@ -397,7 +429,7 @@ function Workspace({ root }) {
         throw e;
       }
     },
-    [folder, toast],
+    [folder, recents, favorites, toast],
   );
 
   /* ---------------- Move ---------------- */
@@ -428,9 +460,10 @@ function Workspace({ root }) {
       }
       if (search) moved.forEach(({ after }) => folder.patch(after.id, after));
       else folder.remove(moved.map((m) => m.before.id));
+      moved.forEach(({ after }) => (recents.patch(after.id, after), favorites.patch(after.id, after)));
       if (moved.some((m) => isFolder(m.before)) || target.id === root.id) refreshRootFolders();
 
-      const targetName = target.id === root.id ? 'My Gallery' : target.name;
+      const targetName = target.id === root.id ? ROOT_LABEL : target.name;
       if (!moved.length) return toast.dismiss(id);
       toast.success(`Moved ${plural(moved.length, 'item')} to ${targetName}`, {
         id,
@@ -452,7 +485,7 @@ function Workspace({ root }) {
           : null,
       });
     },
-    [root.id, search, folder, refreshRootFolders, toast],
+    [root.id, search, folder, recents, favorites, refreshRootFolders, toast],
   );
 
   const dropOnFolder = useCallback(
@@ -480,6 +513,10 @@ function Workspace({ root }) {
       if (trashed.some(isFolder)) refreshRootFolders();
       if (lightbox) setLightbox((lb) => (lb ? { ...lb, index: Math.min(lb.index, media.length - trashed.length - 1) } : lb));
       trashed.forEach((t) => invalidate(t.id));
+      const trashedIds = trashed.map((t) => t.id);
+      const favIds = new Set(trashedIds.filter((id) => favorites.has(id)));
+      recents.remove(trashedIds);
+      favorites.remove(trashedIds);
 
       toast.success(trashed.length === 1 ? `Moved “${trashed[0].name}” to trash` : `Moved ${plural(trashed.length, 'item')} to trash`, {
         duration: 7000,
@@ -487,7 +524,10 @@ function Workspace({ root }) {
           label: 'Undo',
           onClick: async () => {
             const restored = await Promise.allSettled(trashed.map((t) => restoreFile(t.id)));
-            folder.add(restored.filter((r) => r.status === 'fulfilled').map((r) => r.value));
+            const back = restored.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+            folder.add(back);
+            const wasFav = back.filter((f) => favIds.has(f.id));
+            if (wasFav.length) favorites.add(wasFav);
             if (trashed.some(isFolder)) refreshRootFolders();
             const bad = restored.filter((r) => r.status === 'rejected').length;
             bad ? toast.error(`Couldn’t restore ${plural(bad, 'item')}`) : toast.success(`Restored ${plural(trashed.length, 'item')}`);
@@ -495,7 +535,7 @@ function Workspace({ root }) {
         },
       });
     },
-    [folder, refreshRootFolders, toast, lightbox, media.length],
+    [folder, recents, favorites, refreshRootFolders, toast, lightbox, media.length],
   );
 
   const requestTrash = useCallback(
@@ -530,15 +570,18 @@ function Workspace({ root }) {
           return setMoveItems(items);
         case 'delete':
           return requestTrash(items);
+        case 'favorite':
+          return favorites.toggle(first);
         default:
       }
     },
-    [openItem, downloadOne, downloadMany, requestTrash],
+    [openItem, downloadOne, downloadMany, requestTrash, favorites],
   );
 
   const ctx = useMemo(
     () => ({
       isSelected: selection.isSelected,
+      isFavorite: favorites.has,
       selectionMode: selection.count > 0,
       onItemClick: (item, e) => {
         if (e.shiftKey) return selection.toggle(item.id, { range: true });
@@ -557,7 +600,7 @@ function Workspace({ root }) {
       dragIdsFor: (item) => (selection.isSelected(item.id) ? [...selection.selected] : [item.id]),
       onDropOnFolder: dropOnFolder,
     }),
-    [selection, openItem, runAction, dropOnFolder, selectedItems],
+    [selection, favorites.has, openItem, runAction, dropOnFolder, selectedItems],
   );
 
   /* ---------------- Keyboard shortcuts ---------------- */
@@ -596,120 +639,95 @@ function Workspace({ root }) {
 
   /* ---------------- Render ---------------- */
 
-  const empty = !folder.loading && !folder.error && folder.items.length === 0;
-  const emptyKind = search ? 'search' : filter !== 'all' ? 'filtered' : 'empty';
+  const listLoading = loading;
+  const listError = inCollection ? null : folder.error;
+  const hasMore = !inCollection && folder.hasMore;
+  const empty = !listLoading && !listError && items.length === 0;
+  const emptyKind = search ? 'search' : filter !== 'all' ? 'filtered' : inCollection ? section : 'empty';
   const selItems = selection.count ? selectedItems() : [];
-  const currentName = current.id === root.id ? 'My Gallery' : current.name;
+  const currentName = current.id === root.id ? ROOT_LABEL : current.name;
+  const title = search ? `Results for “${search}”` : section === 'recents' ? 'Recents' : section === 'favorites' ? 'Favorites' : currentName;
+  const activeNav = search ? null : inCollection ? section : path.length === 1 ? 'all' : path[1].id;
+  const newFolderHere = () => setCreating(current);
 
   return (
-    <div {...getRootProps({ className: 'flex min-h-screen outline-none' })}>
+    <div {...getRootProps({ className: 'flex min-h-screen bg-page outline-none' })}>
       <input {...getInputProps()} />
 
       <Sidebar
         rootId={root.id}
         folders={rootFolders}
-        currentPath={search ? [rootCrumb, { id: '__search' }] : path}
-        collapsed={collapsed}
-        onToggleCollapse={() => setCollapsed((c) => !c)}
+        active={activeNav}
         mobileOpen={mobileNav}
         onMobileClose={() => setMobileNav(false)}
-        onNavigateRoot={goRoot}
+        onNavigate={navigate}
         onOpenFolder={openTopFolder}
         onDropItems={dropOnFolder}
-        onNewFolder={() => setCreating(true)}
+        onNewFolder={() => setCreating(rootCrumb)}
         quota={quota}
+        theme={theme}
+        onThemeCycle={cycleTheme}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
+          crumbs={
+            !search && !inCollection ? (
+              <Breadcrumbs path={path} onNavigate={(i) => setPath((p) => p.slice(0, i + 1))} onDropItems={(crumb, dragIds) => dropOnFolder(crumb, dragIds)} />
+            ) : null
+          }
+          title={title}
+          subtitle={listLoading ? '\u00a0' : countLabel(items, hasMore)}
           search={searchInput}
           onSearch={setSearchInput}
+          onUpload={openPicker}
+          original={original}
+          onOriginalChange={setOriginal}
+          onMenu={() => setMobileNav(true)}
+          filter={filter}
+          onFilter={setFilter}
           view={view}
           onView={setView}
           sort={sortPref.sort}
           direction={sortPref.direction}
           onSort={setSortPref}
-          onUpload={openPicker}
-          onNewFolder={() => setCreating(true)}
-          original={original}
-          onOriginalChange={setOriginal}
-          theme={theme}
-          onThemeCycle={cycleTheme}
-          onMenu={() => setMobileNav(true)}
+          showSort={!inCollection}
+          onNewFolder={inCollection || search ? null : newFolderHere}
         />
 
-        <main className="flex-1 px-3 pb-32 pt-4 sm:px-6 md:pb-24">
-          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <Breadcrumbs
-              path={path}
-              search={search}
-              onNavigate={(i) => setPath((p) => p.slice(0, i + 1))}
-              onDropItems={(crumb, dragIds) => dropOnFolder(crumb, dragIds)}
-            />
-            <div className="flex items-center gap-1 self-start rounded-xl bg-slate-100 p-1 dark:bg-white/5" role="tablist" aria-label="Filter by type">
-              {FILTERS.map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  role="tab"
-                  aria-selected={filter === id}
-                  onClick={() => setFilter(id)}
-                  className={`relative flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors ${
-                    filter === id ? 'text-slate-900 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                  }`}
-                >
-                  {filter === id && (
-                    <motion.span layoutId="filter-pill" className="absolute inset-0 rounded-lg bg-white shadow-sm dark:bg-white/10" transition={{ type: 'spring', stiffness: 500, damping: 36 }} />
-                  )}
-                  <Icon className="relative h-4 w-4" />
-                  <span className="relative">{label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
+        <main className="flex-1 px-4 pb-32 pt-6 sm:px-8 md:px-12">
           <AnimatePresence mode="wait">
             <motion.div
-              key={`${current.id}|${search}|${filter}|${view}|${sortPref.sort}|${sortPref.direction}`}
+              key={`${section}|${current.id}|${search}|${filter}|${view}|${sortPref.sort}|${sortPref.direction}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, transition: { duration: 0.1 } }}
             >
-              {folder.loading ? (
+              {listLoading ? (
                 view === 'grid' ? <GridSkeleton /> : <ListSkeleton />
-              ) : folder.error ? (
-                <EmptyState kind="error" message={friendlyError(folder.error)} onRetry={folder.refresh} />
+              ) : listError ? (
+                <EmptyState kind="error" message={friendlyError(listError)} onRetry={folder.refresh} />
               ) : empty ? (
-                <EmptyState kind={emptyKind} onUpload={openPicker} onNewFolder={() => setCreating(true)} />
+                <EmptyState kind={emptyKind} onUpload={openPicker} onNewFolder={newFolderHere} />
               ) : view === 'grid' ? (
-                <FileGrid items={folder.items} ctx={ctx} />
+                <FileGrid items={items} ctx={ctx} />
               ) : (
                 <FileList
-                  items={folder.items}
+                  items={items}
                   ctx={ctx}
-                  allSelected={selection.count > 0 && selection.count === folder.items.length}
+                  allSelected={selection.count > 0 && selection.count === items.length}
                   someSelected={selection.count > 0}
-                  onSelectAll={() => (selection.count === folder.items.length ? selection.clear() : selection.selectAll())}
+                  onSelectAll={() => (selection.count === items.length ? selection.clear() : selection.selectAll())}
                 />
               )}
             </motion.div>
           </AnimatePresence>
 
-          {!folder.loading && <LoadMore hasMore={folder.hasMore} loading={folder.loadingMore} onLoadMore={folder.loadMore} />}
+          {!listLoading && !inCollection && <LoadMore hasMore={folder.hasMore} loading={folder.loadingMore} onLoadMore={folder.loadMore} />}
         </main>
       </div>
 
       <DropOverlay active={isDragActive} folderName={currentName} />
-
-      <MobileActions
-        hidden={selection.count > 0}
-        onUpload={openPicker}
-        onNewFolder={() => setCreating(true)}
-        view={view}
-        onView={setView}
-        sort={sortPref.sort}
-        direction={sortPref.direction}
-        onSort={setSortPref}
-      />
 
       <SelectionBar
         count={selection.count}
@@ -723,10 +741,10 @@ function Workspace({ root }) {
 
       <UploadPanel queue={queue} />
 
-      <ContextMenu menu={menu} onClose={() => setMenu(null)} onAction={runAction} />
+      <ContextMenu menu={menu} onClose={() => setMenu(null)} onAction={runAction} isFavorite={favorites.has} />
 
       <RenameDialog open={Boolean(renameItem)} item={renameItem} onClose={() => setRenameItem(null)} onSubmit={(name) => doRename(renameItem, name)} />
-      <RenameDialog open={creating} mode="create" onClose={() => setCreating(false)} onSubmit={doCreateFolder} />
+      <RenameDialog open={Boolean(creating)} mode="create" onClose={() => setCreating(null)} onSubmit={doCreateFolder} />
 
       <MoveDialog
         open={Boolean(moveItems)}
@@ -758,7 +776,9 @@ function Workspace({ root }) {
             onIndexChange={(index) => setLightbox((lb) => ({ ...lb, index }))}
             onClose={() => setLightbox(null)}
             onDownload={downloadOne}
-            hasMore={folder.hasMore}
+            isFavorite={favorites.has}
+            onToggleFavorite={favorites.toggle}
+            hasMore={hasMore}
             onLoadMore={folder.loadMore}
           />
         )}

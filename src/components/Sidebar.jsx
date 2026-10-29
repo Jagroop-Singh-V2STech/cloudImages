@@ -1,144 +1,167 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronsLeft, ChevronsRight, Folder, FolderPlus, Home, X } from 'lucide-react';
+import { LogOut, Monitor, Moon, Sun, X } from 'lucide-react';
 import { DRAG_TYPE, readDragIds } from '../lib/dnd';
+import { useAuth } from '../hooks/useAuth';
 import QuotaBar from './QuotaBar';
 import Logo from './Logo';
 
-function NavItem({ icon: Icon, label, active, collapsed, onClick, onDropItems, fill }) {
+// Folder dots cycle through muted tones so neighbours read as distinct.
+const DOTS = ['#c9a36b', '#7f9cc6', '#8fb08a', '#c98aa2', '#a597c9', '#c99a80'];
+
+function dropProps(onDropItems, setOver) {
+  if (!onDropItems) return {};
+  return {
+    onDragOver: (e) => {
+      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+      e.preventDefault();
+      setOver(true);
+    },
+    onDragLeave: () => setOver(false),
+    onDrop: (e) => {
+      setOver(false);
+      const ids = readDragIds(e);
+      if (ids) {
+        e.preventDefault();
+        onDropItems(ids);
+      }
+    },
+  };
+}
+
+function NavItem({ label, active, onClick, onDropItems, dot }) {
   const [over, setOver] = useState(false);
   return (
     <button
       onClick={onClick}
-      title={collapsed ? label : undefined}
-      onDragOver={(e) => {
-        if (!onDropItems || !e.dataTransfer.types.includes(DRAG_TYPE)) return;
-        e.preventDefault();
-        setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        setOver(false);
-        const ids = readDragIds(e);
-        if (ids && onDropItems) {
-          e.preventDefault();
-          onDropItems(ids);
-        }
-      }}
-      className={`relative flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors ${collapsed ? 'justify-center' : ''} ${
-        over
-          ? 'bg-brand-100 text-brand-700 ring-2 ring-brand-400 dark:bg-brand-500/20 dark:text-brand-200'
-          : active
-            ? 'font-medium text-brand-700 dark:text-white'
-            : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-slate-200'
+      aria-current={active ? 'page' : undefined}
+      {...dropProps(onDropItems, setOver)}
+      className={`relative flex h-11 w-full items-center gap-3 rounded-xl px-4 text-left text-[16px] text-ink transition-colors ${
+        over ? 'bg-accent-soft ring-2 ring-accent' : active ? '' : 'hover:bg-ink/[0.04]'
       }`}
     >
       {active && !over && (
-        <motion.span layoutId="sidebar-active" className="absolute inset-0 rounded-xl bg-brand-50 dark:bg-white/[0.08]" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />
+        <motion.span layoutId="sidebar-active" className="absolute inset-0 rounded-xl bg-card shadow-pill" transition={{ type: 'spring', stiffness: 500, damping: 40 }} />
       )}
-      <Icon className={`relative h-[18px] w-[18px] shrink-0 ${active ? 'text-brand-600 dark:text-brand-300' : ''}`} fill={fill ? 'currentColor' : 'none'} fillOpacity={0.2} />
-      {!collapsed && <span className="relative truncate">{label}</span>}
+      {dot && <span className="relative h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: dot }} aria-hidden />}
+      <span className="relative min-w-0 flex-1 truncate">{label}</span>
+      {over && <span className="relative text-[12px] text-accent-link">Move here</span>}
     </button>
   );
 }
 
-function SidebarBody({ rootId, folders, currentPath, collapsed, onNavigateRoot, onOpenFolder, onDropItems, onNewFolder, quota, onToggleCollapse, onClose }) {
-  const activeTop = currentPath[1]?.id;
+const THEMES = { system: { icon: Monitor, label: 'System' }, light: { icon: Sun, label: 'Light' }, dark: { icon: Moon, label: 'Dark' } };
+const NEXT = { system: 'light', light: 'dark', dark: 'system' };
+
+function ThemeButton({ theme, onCycle }) {
+  const { icon: Icon, label } = THEMES[theme] || THEMES.system;
+  const text = `Appearance: ${label}. Switch to ${THEMES[NEXT[theme] || 'light'].label}`;
+  return (
+    <button className="icon-btn h-8 w-8 text-muted-side hover:bg-ink/[0.05]" onClick={onCycle} aria-label={text} title={text}>
+      <motion.span key={theme} initial={{ rotate: -90, scale: 0.6, opacity: 0 }} animate={{ rotate: 0, scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 400, damping: 22 }}>
+        <Icon className="h-4 w-4" />
+      </motion.span>
+    </button>
+  );
+}
+
+function Account() {
+  const { user, signOut } = useAuth();
+  const [imgOk, setImgOk] = useState(true);
+  const initials = (user?.name || '?').split(/\s+/).map((s) => s[0]).slice(0, 2).join('').toUpperCase();
+  return (
+    <div className="flex items-center gap-3">
+      {user?.picture && imgOk ? (
+        <img src={user.picture} alt="" referrerPolicy="no-referrer" onError={() => setImgOk(false)} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+      ) : (
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink text-[12px] font-semibold text-page">{initials}</span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[14px] font-medium text-ink">{user?.name}</p>
+        <p className="truncate text-[12px] text-muted-side">{user?.email}</p>
+      </div>
+      <button className="icon-btn h-8 w-8 text-muted-side hover:bg-ink/[0.05]" onClick={signOut} aria-label="Sign out" title="Sign out">
+        <LogOut className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function SidebarBody({ rootId, folders, active, onNavigate, onOpenFolder, onDropItems, onNewFolder, quota, theme, onThemeCycle, onClose }) {
   return (
     <div className="flex h-full flex-col">
-      <div className={`flex h-16 items-center gap-2.5 px-4 ${collapsed ? 'justify-center px-0' : ''}`}>
-        <Logo className="h-8 w-8 shrink-0" />
-        {!collapsed && <span className="text-[17px] font-semibold tracking-tight">DriveGallery</span>}
+      <div className="flex items-center gap-3 px-7 pb-6 pt-7">
+        <Logo />
+        <span className="text-[19px] font-semibold tracking-[-0.02em]">DriveGallery</span>
+        <span className={onClose ? 'ml-auto' : '-mr-2 ml-auto'}>
+          <ThemeButton theme={theme} onCycle={onThemeCycle} />
+        </span>
         {onClose && (
-          <button className="icon-btn ml-auto" onClick={onClose} aria-label="Close menu">
+          <button className="icon-btn h-8 w-8 text-muted-side hover:bg-ink/[0.05]" onClick={onClose} aria-label="Close menu">
             <X className="h-5 w-5" />
           </button>
         )}
       </div>
 
-      <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2 scrollbar-thin">
-        <NavItem
-          icon={Home}
-          label="My Gallery"
-          active={currentPath.length === 1}
-          collapsed={collapsed}
-          onClick={onNavigateRoot}
-          onDropItems={(ids) => onDropItems({ id: rootId, name: 'My Gallery' }, ids)}
-        />
-        {!collapsed && (
-          <div className="flex items-center justify-between px-3 pb-1 pt-5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            Folders
-            <button className="icon-btn -mr-2 h-7 w-7" onClick={onNewFolder} aria-label="New folder" title="New folder">
-              <FolderPlus className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-        {collapsed && <div className="my-3 h-px bg-slate-200 dark:bg-white/10" />}
-        <AnimatePresence initial={false}>
-          {folders.map((f) => (
-            <motion.div key={f.id} layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, height: 0 }}>
-              <NavItem
-                icon={Folder}
-                fill
-                label={f.name}
-                active={activeTop === f.id}
-                collapsed={collapsed}
-                onClick={() => onOpenFolder(f)}
-                onDropItems={(ids) => onDropItems(f, ids)}
-              />
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        {!collapsed && folders.length === 0 && <p className="px-3 py-2 text-xs text-slate-400">Folders you create appear here.</p>}
+      <nav className="flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin" aria-label="Library">
+        <div className="space-y-0.5">
+          <NavItem label="All media" active={active === 'all'} onClick={() => onNavigate('all')} onDropItems={(ids) => onDropItems({ id: rootId, name: 'All media' }, ids)} />
+          <NavItem label="Recents" active={active === 'recents'} onClick={() => onNavigate('recents')} />
+          <NavItem label="Favorites" active={active === 'favorites'} onClick={() => onNavigate('favorites')} />
+        </div>
+
+        <h2 className="label-caps px-4 pb-2 pt-8 font-medium tracking-[0.08em] text-muted-side">Folders</h2>
+        <div className="space-y-0.5">
+          <AnimatePresence initial={false}>
+            {folders.map((f, i) => (
+              <motion.div key={f.id} layout initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, height: 0 }}>
+                <NavItem label={f.name} dot={DOTS[i % DOTS.length]} active={active === f.id} onClick={() => onOpenFolder(f)} onDropItems={(ids) => onDropItems(f, ids)} />
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+        <button onClick={onNewFolder} className="mt-1 flex h-11 items-center rounded-xl px-4 text-[16px] text-accent-link hover:underline">
+          + New folder
+        </button>
       </nav>
 
-      <div className="border-t border-slate-200/70 p-4 dark:border-white/[0.06]">
-        <QuotaBar quota={quota} compact={collapsed} />
-        {onToggleCollapse && (
-          <button
-            className={`icon-btn mt-3 ${collapsed ? 'mx-auto flex' : '-ml-1'}`}
-            onClick={onToggleCollapse}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {collapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
-          </button>
-        )}
+      <div className="space-y-6 px-7 pb-7 pt-4">
+        <QuotaBar quota={quota} />
+        <Account />
       </div>
     </div>
   );
 }
 
-/** Desktop: collapsible rail. Mobile: slide-in drawer. */
-export default function Sidebar({ mobileOpen, onMobileClose, collapsed, onToggleCollapse, ...props }) {
+/** Desktop: fixed 260px sidebar. Mobile: slide-in drawer. */
+export default function Sidebar({ mobileOpen, onMobileClose, ...props }) {
+  const close = (fn) => (...args) => (fn(...args), onMobileClose());
   return (
     <>
-      <motion.aside
-        className="sticky top-0 hidden h-screen shrink-0 border-r border-slate-200/70 bg-white/70 backdrop-blur-xl md:block dark:border-white/[0.06] dark:bg-[#0e131d]/80"
-        animate={{ width: collapsed ? 76 : 264 }}
-        initial={false}
-        transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-      >
-        <SidebarBody {...props} collapsed={collapsed} onToggleCollapse={onToggleCollapse} />
-      </motion.aside>
+      <aside className="sticky top-0 hidden h-screen w-[260px] shrink-0 bg-side md:block">
+        <SidebarBody {...props} />
+      </aside>
 
       <AnimatePresence>
         {mobileOpen && (
           <div className="fixed inset-0 z-50 md:hidden">
-            <motion.div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onMobileClose} />
+            <motion.div className="absolute inset-0 bg-black/20 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onMobileClose} />
             <motion.aside
-              className="absolute inset-y-0 left-0 w-[284px] max-w-[85vw] bg-white shadow-float dark:bg-[#0e131d]"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Navigation"
+              className="absolute inset-y-0 left-0 w-[280px] max-w-[85vw] bg-side shadow-float"
               initial={{ x: '-100%' }}
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
-              transition={{ type: 'spring', stiffness: 400, damping: 40 }}
+              transition={{ type: 'spring', stiffness: 380, damping: 40 }}
             >
               <SidebarBody
                 {...props}
-                collapsed={false}
                 onClose={onMobileClose}
-                onNavigateRoot={() => (props.onNavigateRoot(), onMobileClose())}
-                onOpenFolder={(f) => (props.onOpenFolder(f), onMobileClose())}
+                onNavigate={close(props.onNavigate)}
+                onOpenFolder={close(props.onOpenFolder)}
+                onNewFolder={close(props.onNewFolder)}
               />
             </motion.aside>
           </div>

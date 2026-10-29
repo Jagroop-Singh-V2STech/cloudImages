@@ -14,7 +14,7 @@ export default function LoadMore({ hasMore, loading, onLoadMore }) {
 
   if (!hasMore) return null;
   return (
-    <div ref={ref} className="flex justify-center py-8">
+    <div ref={ref} className="flex justify-center py-10">
       <button className="btn-secondary" onClick={onLoadMore} disabled={loading}>
         {loading && <Spinner />}
         {loading ? 'Loading…' : 'Load more'}

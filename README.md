@@ -17,7 +17,7 @@ Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `rea
 - **Delete** moves items to the Drive trash with an **Undo** toast. Deleting a folder asks for confirmation first.
 - **Download** originals, singly or in bulk (one file at a time, with a progress indicator). **Open in Google Drive** links are available too.
 - **Storage quota** bar in the sidebar. It turns amber at 80% and red at 95%. Running out of space gives a clear message with a link to Google One.
-- Light and dark mode (follows the system by default), and a responsive layout with a mobile drawer and bottom action bar. Animations respect `prefers-reduced-motion`.
+- A light, minimal layout with a dark mode (System / Light / Dark toggle in the sidebar): a fixed sidebar (All media, Recents, Favorites, your folders, storage) that becomes a slide-in drawer on mobile. Animations respect `prefers-reduced-motion`.
 
 ### Keyboard shortcuts
 
@@ -110,7 +110,7 @@ src/
   hooks/
     useAuth, useDriveFolder (pagination + optimistic updates), useUploadQueue (3 concurrent),
     useSelection (checkbox + Shift-range), useMediaUrl (lazy thumbnails via IntersectionObserver),
-    useTheme, useToast
+    useCollection, useToast
   components/
     Login, Sidebar, TopBar, Breadcrumbs, FileGrid, FileList, FolderCard, MediaCard, Lightbox,
     UploadPanel, ContextMenu, MoveDialog, RenameDialog, ConfirmDialog, QuotaBar, Toasts,

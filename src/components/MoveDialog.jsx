@@ -70,14 +70,14 @@ export default function MoveDialog({ open, items, root, onClose, onMove }) {
       title={`Move ${items?.length === 1 ? `“${items[0].name}”` : plural(items?.length || 0, 'item')}`}
       description="Choose a destination folder."
     >
-      <div className="overflow-hidden rounded-xl ring-1 ring-slate-200 dark:ring-white/10">
-        <div className="flex items-center gap-1 border-b border-slate-200 bg-slate-50 px-2 py-2 dark:border-white/10 dark:bg-white/[0.03]">
+      <div className="overflow-hidden rounded-2xl bg-surface">
+        <div className="flex items-center gap-1 border-b border-ink/[0.06] px-2 py-2">
           <button className="icon-btn h-8 w-8" onClick={back} disabled={path.length < 2} aria-label="Back">
             <ChevronLeft className="h-4 w-4" />
           </button>
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-medium">
-            {path.length === 1 ? <Home className="h-4 w-4 shrink-0 text-slate-400" /> : <Folder className="h-4 w-4 shrink-0 text-amber-500" />}
-            <span className="truncate">{path.length === 1 ? 'My Gallery' : current.name}</span>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[15px] font-medium">
+            {path.length === 1 ? <Home className="h-4 w-4 shrink-0 text-muted" /> : <Folder className="h-4 w-4 shrink-0 text-muted" />}
+            <span className="truncate">{path.length === 1 ? 'All media' : current.name}</span>
           </div>
           <button className="icon-btn h-8 w-8" onClick={() => setNewName('')} aria-label="New folder here" title="New folder here">
             <FolderPlus className="h-4 w-4" />
@@ -100,13 +100,13 @@ export default function MoveDialog({ open, items, root, onClose, onMove }) {
                   <form onSubmit={createHere} className="flex gap-2">
                     <input
                       autoFocus
-                      className="input h-9"
+                      className="input h-9 bg-card"
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setNewName(null))}
                       placeholder="Folder name"
                     />
-                    <button className="btn-primary h-9" type="submit">
+                    <button className="btn-primary h-9 px-4" type="submit">
                       Create
                     </button>
                   </form>
@@ -114,12 +114,12 @@ export default function MoveDialog({ open, items, root, onClose, onMove }) {
               )}
               {loading && (
                 <li className="flex justify-center py-10">
-                  <Spinner className="h-5 w-5 text-slate-400" />
+                  <Spinner className="h-5 w-5 text-muted" />
                 </li>
               )}
-              {!loading && error && <li className="px-3 py-8 text-center text-sm text-red-600">{error}</li>}
+              {!loading && error && <li className="px-3 py-8 text-center text-[14px] text-danger">{error}</li>}
               {!loading && !error && folders.length === 0 && newName === null && (
-                <li className="px-3 py-10 text-center text-sm text-slate-400">No subfolders. You can move items here.</li>
+                <li className="px-3 py-10 text-center text-[14px] text-muted">No subfolders. You can move items here.</li>
               )}
               {!loading &&
                 folders.map((f) => {
@@ -129,12 +129,12 @@ export default function MoveDialog({ open, items, root, onClose, onMove }) {
                       <button
                         disabled={disabled}
                         onClick={() => enter(f)}
-                        className="menu-item disabled:cursor-not-allowed disabled:opacity-40"
+                        className="menu-item hover:bg-card focus:bg-card disabled:cursor-not-allowed disabled:opacity-40"
                         title={disabled ? 'Can’t move a folder into itself' : undefined}
                       >
-                        <Folder className="h-4 w-4 text-amber-500" fill="currentColor" fillOpacity={0.25} />
+                        <Folder className="h-4 w-4 text-muted" />
                         <span className="flex-1 truncate">{f.name}</span>
-                        <ChevronRight className="h-4 w-4 text-slate-400" />
+                        <ChevronRight className="h-4 w-4 text-muted" />
                       </button>
                     </li>
                   );
@@ -144,7 +144,7 @@ export default function MoveDialog({ open, items, root, onClose, onMove }) {
         </div>
       </div>
 
-      <div className="mt-6 flex items-center justify-end gap-2">
+      <div className="mt-7 flex items-center justify-end gap-2">
         <button className="btn-ghost" onClick={onClose}>
           Cancel
         </button>

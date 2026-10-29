@@ -1,39 +1,39 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { UploadCloud } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
 
 export default function DropOverlay({ active, folderName }) {
   return (
     <AnimatePresence>
       {active && (
         <motion.div
-          className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center bg-brand-600/10 p-6 backdrop-blur-[3px] dark:bg-brand-500/10"
+          className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center bg-page/70 p-6 backdrop-blur-md"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
         >
           <motion.div
-            className="absolute inset-4 rounded-[28px] border-2 border-dashed border-brand-500/70"
-            initial={{ scale: 1.03 }}
+            className="absolute inset-4 rounded-[28px] border-2 border-dashed border-accent/50"
+            initial={{ scale: 1.02 }}
             animate={{ scale: 1 }}
-            exit={{ scale: 1.03 }}
+            exit={{ scale: 1.02 }}
           />
           <motion.div
-            className="panel flex flex-col items-center px-10 py-8 text-center"
-            initial={{ y: 20, scale: 0.9 }}
-            animate={{ y: 0, scale: 1 }}
-            exit={{ y: 10, scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+            className="flex flex-col items-center text-center"
+            initial={{ y: 16, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 8, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 28 }}
           >
             <motion.div
-              className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-600 text-white shadow-lg shadow-brand-600/40"
-              animate={{ y: [0, -8, 0] }}
-              transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+              className="mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-accent text-white"
+              animate={{ y: [0, -6, 0] }}
+              transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
             >
-              <UploadCloud className="h-8 w-8" />
+              <ArrowUp className="h-7 w-7" />
             </motion.div>
-            <p className="text-lg font-semibold">Drop files to upload</p>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Images and videos go into <span className="font-medium text-slate-700 dark:text-slate-200">{folderName}</span>
+            <p className="text-[28px] font-semibold tracking-display">Drop to upload</p>
+            <p className="mt-2 text-[17px] text-muted">
+              Photos and videos go into <span className="text-ink">{folderName}</span>
             </p>
           </motion.div>
         </motion.div>

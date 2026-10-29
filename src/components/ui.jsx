@@ -40,35 +40,33 @@ export function Modal({ open, onClose, title, description, icon: Icon, children,
     <AnimatePresence>
       {open && (
         <motion.div className="fixed inset-0 z-[60] flex items-end justify-center p-4 sm:items-center" {...fade}>
-          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm dark:bg-black/60" onClick={() => dismissible && onClose?.()} />
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-md" onClick={() => dismissible && onClose?.()} />
           <motion.div
             ref={panelRef}
             role="dialog"
             aria-modal="true"
             aria-label={title}
-            className={`panel relative w-full ${widths[size]} p-6`}
+            className={`relative w-full ${widths[size]} rounded-[24px] bg-card p-7 shadow-float`}
             {...modal}
           >
             {dismissible && (
-              <button data-close className="icon-btn absolute right-3 top-3" onClick={onClose} aria-label="Close">
+              <button data-close className="icon-btn absolute right-4 top-4 h-8 w-8" onClick={onClose} aria-label="Close">
                 <X className="h-4 w-4" />
               </button>
             )}
             {(Icon || title) && (
-              <div className="mb-4 flex items-start gap-3 pr-8">
+              <div className="mb-5 pr-8">
                 {Icon && (
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-500/15 dark:text-brand-300">
-                    <Icon className="h-5 w-5" />
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-surface text-ink">
+                    <Icon className="h-5 w-5" strokeWidth={1.75} />
                   </div>
                 )}
-                <div className="min-w-0">
-                  <h2 className="text-base font-semibold">{title}</h2>
-                  {description && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{description}</p>}
-                </div>
+                <h2 className="text-[22px] leading-tight">{title}</h2>
+                {description && <p className="mt-2 text-[15px] leading-relaxed text-muted">{description}</p>}
               </div>
             )}
             {children}
-            {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+            {footer && <div className="mt-7 flex justify-end gap-2">{footer}</div>}
           </motion.div>
         </motion.div>
       )}
@@ -78,7 +76,7 @@ export function Modal({ open, onClose, title, description, icon: Icon, children,
 }
 
 /** Dropdown menu anchored to a trigger. `children` receives a close() function. */
-export function Dropdown({ trigger, children, align = 'right', width = 'w-56' }) {
+export function Dropdown({ trigger, children, align = 'right', width = 'w-56', placement = 'bottom' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -94,13 +92,16 @@ export function Dropdown({ trigger, children, align = 'right', width = 'w-56' })
     };
   }, [open]);
 
+  const side = placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2';
+  const origin = `${placement === 'top' ? 'origin-bottom' : 'origin-top'}-${align === 'right' ? 'right' : 'left'}`;
+
   return (
     <div className="relative" ref={ref}>
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
       <AnimatePresence>
         {open && (
           <motion.div
-            className={`panel absolute top-full z-50 mt-2 ${width} p-1.5 ${align === 'right' ? 'right-0 origin-top-right' : 'left-0 origin-top-left'}`}
+            className={`panel absolute z-50 ${side} ${width} p-1.5 ${align === 'right' ? 'right-0' : 'left-0'} ${origin}`}
             {...popover}
             role="menu"
           >
@@ -123,10 +124,10 @@ export function Checkbox({ checked, indeterminate, onChange, className = '', lab
         e.stopPropagation();
         onChange?.(e);
       }}
-      className={`flex h-5 w-5 items-center justify-center rounded-md border transition-all duration-150 ${
+      className={`flex h-6 w-6 items-center justify-center rounded-full transition-all duration-150 ${
         checked || indeterminate
-          ? 'border-brand-600 bg-brand-600 text-white shadow-sm shadow-brand-600/30'
-          : 'border-slate-300 bg-white/90 hover:border-brand-500 dark:border-white/25 dark:bg-slate-900/70'
+          ? 'bg-accent text-white'
+          : 'bg-card/80 text-transparent ring-1 ring-inset ring-ink/20 backdrop-blur hover:ring-accent'
       } ${className}`}
     >
       <AnimatePresence initial={false}>
@@ -142,47 +143,72 @@ export function Checkbox({ checked, indeterminate, onChange, className = '', lab
 
 export function Switch({ checked, onChange, label, description }) {
   return (
-    <label className="flex cursor-pointer items-start gap-3">
+    <div className="flex items-start gap-3">
       <button
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-          checked ? 'bg-brand-600' : 'bg-slate-300 dark:bg-white/20'
-        }`}
+        className={`relative mt-0.5 inline-flex h-[26px] w-[44px] shrink-0 items-center rounded-full transition-colors ${checked ? 'bg-[#34c759]' : 'bg-track'}`}
       >
         <motion.span
           layout
           transition={{ type: 'spring', stiffness: 600, damping: 35 }}
-          className={`h-4 w-4 rounded-full bg-white shadow ${checked ? 'ml-[18px]' : 'ml-0.5'}`}
+          className={`h-[22px] w-[22px] rounded-full bg-white shadow-pill ${checked ? 'ml-[20px]' : 'ml-[2px]'}`}
         />
       </button>
-      <span className="min-w-0 text-sm">
-        <span className="font-medium text-slate-700 dark:text-slate-200">{label}</span>
-        {description && <span className="block text-xs text-slate-500 dark:text-slate-400">{description}</span>}
+      <span className="min-w-0 text-[14px]">
+        <span className="font-medium text-ink">{label}</span>
+        {description && <span className="mt-0.5 block text-[13px] text-muted">{description}</span>}
       </span>
-    </label>
+    </div>
   );
 }
 
 /** Animated progress bar; width eases with a spring. */
-export function ProgressBar({ value, tone = 'brand', className = 'h-1.5' }) {
+export function ProgressBar({ value, tone = 'ink', className = 'h-1' }) {
   const tones = {
-    brand: 'bg-brand-500',
-    success: 'bg-emerald-500',
-    error: 'bg-red-500',
-    amber: 'bg-amber-500',
-    muted: 'bg-slate-400',
+    ink: 'bg-ink',
+    accent: 'bg-accent',
+    success: 'bg-[#34c759]',
+    error: 'bg-danger-fill',
+    amber: 'bg-warn-fill',
+    muted: 'bg-muted',
   };
   return (
-    <div className={`w-full overflow-hidden rounded-full bg-slate-200/80 dark:bg-white/10 ${className}`}>
+    <div className={`w-full overflow-hidden rounded-full bg-track ${className}`}>
       <motion.div
         className={`h-full rounded-full ${tones[tone]}`}
         initial={false}
         animate={{ width: `${Math.max(0, Math.min(1, value || 0)) * 100}%` }}
         transition={{ type: 'spring', stiffness: 120, damping: 24 }}
       />
+    </div>
+  );
+}
+
+/** Pill-shaped segmented control with a sliding white thumb. */
+export function Segmented({ options, value, onChange, label, layoutId }) {
+  return (
+    <div className="flex rounded-full bg-surface p-1" role="radiogroup" aria-label={label}>
+      {options.map(({ id, label: text, icon: Icon, ariaLabel }) => (
+        <button
+          key={id}
+          role="radio"
+          aria-checked={value === id}
+          aria-label={ariaLabel}
+          title={ariaLabel}
+          onClick={() => onChange(id)}
+          className={`relative flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[14px] transition-colors ${
+            value === id ? 'text-ink' : 'text-muted hover:text-ink'
+          }`}
+        >
+          {value === id && <motion.span layoutId={layoutId} className="absolute inset-0 rounded-full bg-card shadow-pill" transition={{ type: 'spring', stiffness: 500, damping: 38 }} />}
+          {Icon && <Icon className="relative h-4 w-4" />}
+          {text && <span className="relative">{text}</span>}
+        </button>
+      ))}
     </div>
   );
 }
