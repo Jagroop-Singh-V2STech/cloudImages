@@ -24,7 +24,9 @@ export function Modal({ open, onClose, title, description, icon: Icon, children,
     const prev = document.activeElement;
     // Focus the first focusable control once the enter animation starts.
     const t = setTimeout(() => {
-      const el = panelRef.current?.querySelector('[data-autofocus], input, button:not([data-close])');
+      const panel = panelRef.current;
+      // An explicit data-autofocus wins over whatever control comes first in the DOM.
+      const el = panel?.querySelector('[data-autofocus]') || panel?.querySelector('input, button:not([data-close])');
       el?.focus();
     }, 30);
     return () => {

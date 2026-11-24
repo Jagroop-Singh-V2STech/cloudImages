@@ -105,7 +105,7 @@ export function UploadButton({ onUpload, original, onOriginalChange }) {
                 checked={original}
                 onChange={onOriginalChange}
                 label="Original quality"
-                description={original ? 'Images upload untouched.' : 'Images are resized to 2560px (85% quality) to save space.'}
+                description={original ? 'Images upload untouched.' : 'Images are resized to 2560px and saved as WebP to save space.'}
               />
             </div>
           </div>

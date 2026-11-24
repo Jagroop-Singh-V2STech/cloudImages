@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { LogOut, Monitor, Moon, Sun, X } from 'lucide-react';
+import { Monitor, Moon, Sun, X } from 'lucide-react';
 import { DRAG_TYPE, readDragIds } from '../lib/dnd';
-import { useAuth } from '../hooks/useAuth';
-import QuotaBar from './QuotaBar';
+import StorageCard from './StorageCard';
 import Logo from './Logo';
 
 // Folder dots cycle through muted tones so neighbours read as distinct.
@@ -65,29 +64,7 @@ function ThemeButton({ theme, onCycle }) {
   );
 }
 
-function Account() {
-  const { user, signOut } = useAuth();
-  const [imgOk, setImgOk] = useState(true);
-  const initials = (user?.name || '?').split(/\s+/).map((s) => s[0]).slice(0, 2).join('').toUpperCase();
-  return (
-    <div className="flex items-center gap-3">
-      {user?.picture && imgOk ? (
-        <img src={user.picture} alt="" referrerPolicy="no-referrer" onError={() => setImgOk(false)} className="h-8 w-8 shrink-0 rounded-full object-cover" />
-      ) : (
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink text-[12px] font-semibold text-page">{initials}</span>
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[14px] font-medium text-ink">{user?.name}</p>
-        <p className="truncate text-[12px] text-muted-side">{user?.email}</p>
-      </div>
-      <button className="icon-btn h-8 w-8 text-muted-side hover:bg-ink/[0.05]" onClick={signOut} aria-label="Sign out" title="Sign out">
-        <LogOut className="h-4 w-4" />
-      </button>
-    </div>
-  );
-}
-
-function SidebarBody({ rootId, folders, active, onNavigate, onOpenFolder, onDropItems, onNewFolder, quota, theme, onThemeCycle, onClose }) {
+function SidebarBody({ rootId, folders, active, onNavigate, onOpenFolder, onDropItems, onNewFolder, quota, onAddAccount, theme, onThemeCycle, onClose }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 px-7 pb-6 pt-7">
@@ -126,8 +103,7 @@ function SidebarBody({ rootId, folders, active, onNavigate, onOpenFolder, onDrop
       </nav>
 
       <div className="space-y-6 px-7 pb-7 pt-4">
-        <QuotaBar quota={quota} />
-        <Account />
+        <StorageCard quota={quota} onAddAccount={onAddAccount} />
       </div>
     </div>
   );

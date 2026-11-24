@@ -1,0 +1,9 @@
+# Local settings for `npm run dev:worker` (the linked-accounts Worker). Copy to .dev.vars (git-ignored).
+# Same OAuth client as VITE_GOOGLE_CLIENT_ID in .env; the secret is under Credentials → your client.
+GOOGLE_CLIENT_ID=1234567890-abcdefghijklmnop.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-replace-me
+# 32 random bytes, base64. Generate with: openssl rand -base64 32
+TOKEN_KEY=replace-with-openssl-rand-base64-32
+# In development the app and Worker share Vite's origin through its proxy.
+APP_ORIGINS=http://localhost:5173
+WORKER_ORIGIN=http://localhost:5173
