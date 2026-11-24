@@ -1,8 +1,8 @@
 # DriveGallery
 
-A client-side photo and video manager that stores everything in **your own Google Drive**. You sign in with Google and the app keeps your media in a `DriveGallery` folder in My Drive. There's no backend: the browser talks to the Google Drive API v3 directly.
+A client-side photo and video manager that stores everything in **your own Google Drive**. You sign in with Google and the app keeps your media in a `DriveGallery` folder in My Drive. The browser talks to the Google Drive API v3 directly. An optional Cloudflare Worker keeps *linked* accounts connected (see below); your files never pass through it.
 
-Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `react-dropzone` and `lucide-react`.
+Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `react-dropzone` and `lucide-react`, plus a small Cloudflare Worker (Workers KV) for linked accounts.
 
 ## Features
 
@@ -10,13 +10,17 @@ Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `rea
 - **Least privilege**: the app uses only the `drive.file` scope, so it can see files it created and nothing else in your Drive.
 - **Browse**: folders and nested subfolders, breadcrumbs, grid and list views, sort by name, date or size, search by name across the whole gallery, an All / Images / Videos filter, and infinite scroll with Drive `pageToken`s.
 - **Upload**: drag and drop anywhere on the page, or use the file picker. Up to 3 uploads run at once, each with progress, speed, cancel and retry.
-  - Images can be compressed in the browser (longest side capped at 2560px, quality 0.85). Turn this off with **Upload ▾ → Upload original quality**.
+  - Images are compressed in the browser: the longest side is capped at 2560px and they're re-encoded as **WebP** (quality 0.82), usually 25–35% smaller than JPEG. Browsers that can't encode WebP keep the original format. Turn this off with **Upload ▾ → Original quality**.
   - Videos and any file over 5 MB use Drive's **resumable upload** in 4 MiB chunks. If the network drops, the upload picks up from the last byte Drive stored.
 - **Lightbox**: fullscreen viewer with a shared-element transition from the thumbnail. Navigate with ← → or swipe. Images zoom with + / −, the mouse wheel or a double-click, and you can pan while zoomed. Videos play in a built-in player.
 - **Organize**: rename (F2), move with a folder picker or by dragging items onto a folder, breadcrumb or sidebar entry, multi-select (checkboxes, Shift-click, Ctrl/⌘-click, Ctrl/⌘-A), and bulk move, delete or download.
 - **Delete** moves items to the Drive trash with an **Undo** toast. Deleting a folder asks for confirmation first.
 - **Download** originals, singly or in bulk (one file at a time, with a progress indicator). **Open in Google Drive** links are available too.
-- **Storage quota** bar in the sidebar. It turns amber at 80% and red at 95%. Running out of space gives a clear message with a link to Google One.
+- **Storage pool across Google accounts.** Link extra Google accounts (sidebar → **Storage** → **Link account**) and their free space adds up: two free accounts give 30 GB. Each account keeps its own `DriveGallery` folder, and the gallery shows them merged (same-named folders become one folder). New uploads go to the first account with room, main account first; if Google reports an account full, the upload moves on to the next one.
+  - Linked accounts are handled by the **Cloudflare Worker**, which keeps each one's refresh token encrypted, so they **stay linked** across sign-outs, closed tabs and devices. They only need reconnecting if Google stops accepting the grant (access revoked, password change, or the 7-day limit of apps in *Testing* mode).
+  - **Unlink** revokes that account's access; its files stay in its own Drive. Up to 9 extra accounts.
+  - Without the Worker the app works as before with the main account only.
+- **Storage** card in the sidebar: pooled usage with a bar split by account, and a **Google accounts** dialog with per-account usage, upload order and link / reconnect / unlink. It turns amber at 80% and red at 95%.
 - A light, minimal layout with a dark mode (System / Light / Dark toggle in the sidebar): a fixed sidebar (All media, Recents, Favorites, your folders, storage) that becomes a slide-in drawer on mobile. Animations respect `prefers-reduced-motion`.
 
 ### Keyboard shortcuts
@@ -73,6 +77,67 @@ npm run preview   # serves dist/ on http://localhost:5173
 
 `dist/` is a static site, so you can host it anywhere (Netlify, Vercel, GitHub Pages, S3, and so on). Remember to add that origin to the OAuth client.
 
+## 2b. Linked accounts Worker (optional)
+
+The main sign-in never touches the Worker. It only handles linked accounts: it runs Google's authorization-code flow for each one, keeps the refresh token encrypted (AES-GCM) in Workers KV, and hands the app short-lived access tokens. The app proves who it is with the main account's Google access token, which the Worker checks with Google and requires to be issued to your OAuth client.
+
+**Google Cloud:** on the same OAuth client, add these **Authorized redirect URIs**, and copy the **Client secret**:
+
+- `http://localhost:5173/link/callback` (development)
+- `https://<your worker host>/link/callback` (production)
+
+**Local development** (a second terminal next to `npm run dev`; Vite forwards `/api` and `/link` to it):
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+Fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and a `TOKEN_KEY` from:
+
+```bash
+openssl rand -base64 32
+```
+
+```bash
+npm run dev:worker
+```
+
+`wrangler dev` simulates KV locally, so no Cloudflare account is needed for development.
+
+**Deploy:**
+
+1. Sign in to Cloudflare: `npx wrangler login`.
+2. Create the KV namespace and paste the printed `id` into `wrangler.jsonc`:
+
+   ```bash
+   npx wrangler kv namespace create DG_KV
+   ```
+
+3. In `wrangler.jsonc`, set `APP_ORIGINS` to your app's origin (for example `https://gallery.example.com`).
+4. Add the secrets (use a **new** `TOKEN_KEY` for production):
+
+   ```bash
+   npx wrangler secret put GOOGLE_CLIENT_ID
+   ```
+
+   ```bash
+   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   ```
+
+   ```bash
+   npx wrangler secret put TOKEN_KEY
+   ```
+
+5. Deploy, then add its `/link/callback` URL to the OAuth client:
+
+   ```bash
+   npm run deploy:worker
+   ```
+
+6. Build the app with `VITE_LINK_API_URL` set to the Worker's URL (for example `https://drivegallery-links.<you>.workers.dev`).
+
+Keep `TOKEN_KEY` safe: if it changes, stored refresh tokens can't be decrypted and each linked account has to reconnect once.
+
 ## 3. Moving from Testing to production
 
 While the consent screen's publishing status is **Testing**:
@@ -96,6 +161,9 @@ Asking for a broader scope later, such as `drive.readonly` to show files the use
 ## Project structure
 
 ```
+worker/
+  index.js          Cloudflare Worker for linked accounts: OAuth code flow + PKCE, encrypted
+                    refresh tokens in KV, /api/links, /api/token, /api/unlink
 src/
   lib/
     drive.js        All Drive API calls: list, folders, simple + resumable upload, rename,
@@ -105,7 +173,8 @@ src/
     compress.js     Client-side image resize/re-encode
     format.js, motion.js, dnd.js
   context/
-    AuthContext.jsx Token in memory, expiry tracking, silent refresh + "Session expired" fallback
+    AuthContext.jsx Main token in memory, expiry tracking, silent refresh + "Session expired" fallback;
+                    linked-account tokens from the Worker
     ToastContext.jsx
   hooks/
     useAuth, useDriveFolder (pagination + optimistic updates), useUploadQueue (3 concurrent),
@@ -113,7 +182,7 @@ src/
     useCollection, useToast
   components/
     Login, Sidebar, TopBar, Breadcrumbs, FileGrid, FileList, FolderCard, MediaCard, Lightbox,
-    UploadPanel, ContextMenu, MoveDialog, RenameDialog, ConfirmDialog, QuotaBar, Toasts,
+    UploadPanel, ContextMenu, MoveDialog, RenameDialog, ConfirmDialog, StorageCard, Toasts,
     EmptyState, DropOverlay, SelectionBar, Skeletons, ui (Modal, Dropdown, Switch, …)
   Gallery.jsx       The signed-in workspace that wires everything together
 ```
@@ -131,3 +200,4 @@ src/
 - Silent token refresh opens a short-lived Google popup. Browsers block popups that aren't triggered by a click, so after an hour you'll usually see the "Session expired, Continue" prompt. One click resumes everything that was waiting.
 - Videos are downloaded completely into memory before they play (Drive media requires the auth header, which a plain `<video src>` can't send). Very large videos take a while to open.
 - Folders can't be downloaded as a whole. Bulk download skips them.
+- A file always stays in the Google account it was uploaded to. Drive has no API to move a file between accounts.

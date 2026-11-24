@@ -16,6 +16,7 @@ import {
   restoreFile,
   saveBlob,
   STORAGE_UPGRADE_URL,
+  syncPoolAccounts,
   trashFile,
 } from './lib/drive';
 import { invalidate } from './lib/mediaCache';
@@ -26,6 +27,7 @@ import { useUploadQueue } from './hooks/useUploadQueue';
 import { useToast } from './hooks/useToast';
 import { useCollection } from './hooks/useCollection';
 import { useTheme } from './hooks/useTheme';
+import { useAuth } from './hooks/useAuth';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import Breadcrumbs from './components/Breadcrumbs';
@@ -203,6 +205,22 @@ function Workspace({ root }) {
     getQuota().then(setQuota).catch(() => {});
   }, []);
   useEffect(refreshQuota, [refreshQuota]);
+  // A Google account was linked or disconnected: re-sync the pool and reload what's on screen.
+  const { accountsKey, addAccount, authError } = useAuth();
+  useEffect(() => {
+    if (authError) toast.error('Google account', { id: 'auth', description: authError });
+  }, [authError, toast]);
+  const firstAccounts = useRef(accountsKey);
+  useEffect(() => {
+    if (accountsKey === firstAccounts.current) return;
+    firstAccounts.current = accountsKey;
+    syncPoolAccounts().then(() => {
+      folder.refresh();
+      refreshRootFolders();
+      refreshQuota();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountsKey]);
   const quotaTimer = useRef(null);
   const refreshQuotaSoon = useCallback(() => {
     clearTimeout(quotaTimer.current);
@@ -228,10 +246,11 @@ function Workspace({ root }) {
   const quotaToast = useCallback(() => {
     toast.error('Google storage is full', {
       id: 'quota',
-      description: 'Free up space in Drive or upgrade your plan to keep uploading.',
+      description: 'Link another Google account to pool its free 15 GB, or free up space in Drive.',
+      action: { label: 'Link account', onClick: addAccount },
       link: { label: 'Get more storage', href: STORAGE_UPGRADE_URL },
     });
-  }, [toast]);
+  }, [toast, addAccount]);
 
   const queue = useUploadQueue({
     onUploaded: (file, folderId) => {
@@ -665,6 +684,7 @@ function Workspace({ root }) {
         onDropItems={dropOnFolder}
         onNewFolder={() => setCreating(rootCrumb)}
         quota={quota}
+        onAddAccount={addAccount}
         theme={theme}
         onThemeCycle={cycleTheme}
       />

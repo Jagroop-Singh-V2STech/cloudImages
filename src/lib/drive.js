@@ -29,6 +29,7 @@ export const FILE_FIELDS =
 /* ------------------------------------------------------------------------ */
 
 let tokenProvider = {
+  accounts: () => [],
   getToken: async () => null,
   refreshToken: async () => {
     throw new DriveError('Not signed in', { status: 401, reason: 'unauthenticated' });
@@ -36,13 +37,18 @@ let tokenProvider = {
 };
 
 /**
- * Wired up by AuthProvider. `getToken` returns a valid token (refreshing
- * proactively if it is about to expire). `refreshToken` forces a new token and
- * resolves once the user (silently or via the "Session expired" prompt) has one.
+ * Wired up by AuthProvider. Accounts are identified by email.
+ *   accounts()          → connected accounts, primary first
+ *   getToken(acct)      → a valid token (refreshing proactively near expiry)
+ *   refreshToken(acct)  → forces a new token; resolves once the user
+ *                         (silently or via the "Session expired" prompt) has one
  */
 export function configureDrive(provider) {
   tokenProvider = provider;
 }
+
+const connectedAccounts = () => tokenProvider.accounts();
+const primaryAccount = () => connectedAccounts()[0];
 
 /* ------------------------------------------------------------------------ */
 /* Errors                                                                    */
@@ -70,7 +76,7 @@ export function friendlyError(err) {
   switch (err.reason) {
     case 'storageQuotaExceeded':
     case 'quotaExceeded':
-      return 'Your Google storage is full. Free up space or upgrade your plan to keep uploading.';
+      return 'Your Google storage is full. Link another Google account, free up space, or upgrade your plan to keep uploading.';
     case 'rateLimitExceeded':
     case 'userRateLimitExceeded':
       return 'Google Drive is rate-limiting requests. Please wait a moment and try again.';
@@ -83,6 +89,8 @@ export function friendlyError(err) {
       return 'Network error. Check your connection and try again.';
     case 'unauthenticated':
       return 'Your session has ended. Please sign in again.';
+    case 'reauth':
+      return err.message;
     default:
       return err.message || 'Something went wrong.';
   }
@@ -126,13 +134,14 @@ function isRetryable(err) {
  *  - retries 429 / 5xx / rate-limit errors with exponential backoff
  *  - converts Drive's JSON error envelope into a DriveError
  */
-export async function driveFetch(url, { method = 'GET', headers = {}, body, signal, raw = false } = {}) {
+export async function driveFetch(url, { acct, method = 'GET', headers = {}, body, signal, raw = false } = {}) {
+  acct = acct || primaryAccount();
   let refreshed = false;
   let attempt = 0;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const token = await tokenProvider.getToken();
+    const token = await tokenProvider.getToken(acct);
     let res;
     try {
       res = await fetch(url, {
@@ -155,7 +164,7 @@ export async function driveFetch(url, { method = 'GET', headers = {}, body, sign
 
     if (res.status === 401 && !refreshed) {
       refreshed = true;
-      await tokenProvider.refreshToken();
+      await tokenProvider.refreshToken(acct);
       continue;
     }
 
@@ -176,24 +185,229 @@ const qs = (params) =>
 const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 /* ------------------------------------------------------------------------ */
+/* Storage pool                                                              */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Several Google accounts can be linked and used as one storage pool. Each
+ * account has its own "DriveGallery" root folder, and the UI shows them merged:
+ *
+ *  - Files live in exactly one account. `fileAccount` remembers which one, so
+ *    rename/move/delete/download go to the right account by file id alone.
+ *  - Folders with the same name at the same place in different accounts are
+ *    one *folder group*. The UI only ever sees the group's key (the id of the
+ *    first member we saw); `groups` maps it to the real id in each account.
+ *    Listing a group lists every member and merges the results.
+ *  - A folder only gets created in another account when something is uploaded
+ *    or moved there (`ensureFolderIn`).
+ *
+ * Every file object handed to the UI passes through `tag()`, which rewrites
+ * folder ids and `parents` to group keys and records the owning account in
+ * `_acct`.
+ */
+
+const fileAccount = new Map(); // file id → account
+const groups = new Map(); // group key → { name, parent: key|null, ids: { [acct]: id }, checked: Set<acct> }
+const alias = new Map(); // real folder id (any account) → group key
+const childIndex = new Map(); // `${parentKey}/${name}` → group key
+let rootKey = null;
+
+const childKey = (parentKey, name) => `${parentKey}/${name}`;
+
+/** Join a real folder (in `acct`) to its group, creating the group if needed. */
+function linkFolder(folder, acct, parentKey) {
+  let key = alias.get(folder.id);
+  if (!key && parentKey) key = childIndex.get(childKey(parentKey, folder.name));
+  if (!key) {
+    key = folder.id;
+    groups.set(key, { name: folder.name, parent: parentKey || null, ids: {}, checked: new Set() });
+  }
+  const g = groups.get(key);
+  // A parent that is a known group beats a raw id we may have recorded earlier.
+  if (parentKey && groups.has(parentKey) && !groups.has(g.parent)) g.parent = parentKey;
+  if (g.parent) childIndex.set(childKey(g.parent, g.name), key);
+  g.ids[acct] = folder.id;
+  g.checked.add(acct);
+  alias.set(folder.id, key);
+  return key;
+}
+
+/** Normalise a Drive file from `acct` for the UI (see the comment above). */
+function tag(file, acct) {
+  if (!file) return file;
+  const parents = (file.parents || []).map((p) => alias.get(p) || p);
+  if (file.mimeType === FOLDER_MIME) {
+    const key = linkFolder(file, acct, parents[0]);
+    return { ...file, id: key, parents, _acct: acct };
+  }
+  fileAccount.set(file.id, acct);
+  return { ...file, parents, _acct: acct };
+}
+
+const accountOf = (fileId) => fileAccount.get(fileId) || primaryAccount();
+
+/**
+ * Make sure we know, for every connected account, whether this folder group
+ * exists there (and its id if it does). Looks missing members up by name under
+ * the parent's member in that account.
+ */
+async function resolveGroup(key, signal) {
+  const g = groups.get(key);
+  if (!g) return null;
+  for (const acct of connectedAccounts()) {
+    if (g.ids[acct] || g.checked.has(acct)) continue;
+    const parent = g.parent && (await resolveGroup(g.parent, signal));
+    const parentId = parent?.ids[acct];
+    if (parentId) {
+      const found = await findFolder(acct, g.name, parentId, signal);
+      if (found) {
+        g.ids[acct] = found.id;
+        alias.set(found.id, key);
+      }
+    }
+    g.checked.add(acct);
+  }
+  return g;
+}
+
+/** Real id of folder group `key` in `acct`, creating it (and its parents) if needed. */
+async function ensureFolderIn(key, acct) {
+  const g = await resolveGroup(key);
+  if (!g) return key; // not a group: a raw folder id, use as is
+  if (g.ids[acct]) return g.ids[acct];
+  if (!g.parent) throw new DriveError('DriveGallery folder missing in linked account', { reason: 'notFound' });
+  const parentId = await ensureFolderIn(g.parent, acct);
+  const created = await driveFetch(`${API}/files?fields=${encodeURIComponent(FILE_FIELDS)}`, {
+    acct,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: g.name, mimeType: FOLDER_MIME, parents: [parentId] }),
+  });
+  g.ids[acct] = created.id;
+  g.checked.add(acct);
+  alias.set(created.id, key);
+  return created.id;
+}
+
+/** Real (account, id) pairs behind a UI id: every member for a folder group, one for a file. */
+async function membersOf(id) {
+  const g = await resolveGroup(id);
+  if (g) return Object.entries(g.ids).map(([acct, realId]) => ({ acct, id: realId }));
+  return [{ acct: accountOf(id), id }];
+}
+
+/** Forget everything (sign-out). */
+export function resetPool() {
+  fileAccount.clear();
+  groups.clear();
+  alias.clear();
+  childIndex.clear();
+  quotas.clear();
+  reserved.clear();
+  rootKey = null;
+  rootFolderPromise = null;
+  syncPromise = null;
+}
+
+/** Kept for older callers. */
+export const resetRootFolder = resetPool;
+
+/**
+ * Bring the pool in line with the connected accounts after one is linked or
+ * disconnected: find/create the root folder in new accounts and drop members
+ * from accounts that are gone.
+ */
+let syncPromise = null;
+export function syncPoolAccounts() {
+  const run = async () => {
+    const root = groups.get(rootKey);
+    if (!root) return;
+    const accts = connectedAccounts();
+    const live = new Set(accts);
+    for (const g of groups.values()) {
+      for (const acct of Object.keys(g.ids)) if (!live.has(acct)) delete g.ids[acct];
+      for (const acct of [...g.checked]) if (!live.has(acct)) g.checked.delete(acct);
+    }
+    for (const [id, acct] of fileAccount) if (!live.has(acct)) fileAccount.delete(id);
+    for (const acct of [...quotas.keys()]) if (!live.has(acct)) quotas.delete(acct);
+    await Promise.all(
+      accts
+        .filter((acct) => !root.ids[acct])
+        .map(async (acct) => {
+          try {
+            const r = await lookupOrCreateRoot(acct);
+            root.ids[acct] = r.id;
+            alias.set(r.id, rootKey);
+          } catch {
+            /* that account just won't contribute until the next sync */
+          }
+          root.checked.add(acct);
+        }),
+    );
+  };
+  syncPromise = (syncPromise || Promise.resolve()).then(run, run);
+  return syncPromise;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Account                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/** Profile of the main account (called right after sign-in). */
 export async function getUserInfo() {
   return driveFetch('https://www.googleapis.com/oauth2/v3/userinfo');
 }
 
-/** about.get — Drive requires an explicit `fields` mask for this endpoint. */
+const quotas = new Map(); // acct → { limit, usage }
+const reserved = new Map(); // acct → bytes of uploads in flight
+
+/**
+ * about.get for every account (Drive requires an explicit `fields` mask).
+ * Returns the pooled totals plus a per-account breakdown.
+ */
 export async function getQuota() {
-  const data = await driveFetch(`${API}/about?fields=storageQuota`);
-  const q = data.storageQuota || {};
+  const accts = connectedAccounts();
+  const list = await Promise.all(
+    accts.map(async (acct) => {
+      try {
+        const data = await driveFetch(`${API}/about?fields=storageQuota`, { acct });
+        const q = data.storageQuota || {};
+        const entry = {
+          account: acct,
+          // `limit` is absent for accounts with unlimited storage.
+          limit: q.limit ? Number(q.limit) : null,
+          usage: Number(q.usage || 0),
+          usageInDrive: Number(q.usageInDrive || 0),
+          usageInDriveTrash: Number(q.usageInDriveTrash || 0),
+        };
+        quotas.set(acct, entry);
+        return entry;
+      } catch (e) {
+        if (acct === accts[0]) throw e;
+        return null;
+      }
+    }),
+  );
+  const ok = list.filter(Boolean);
+  const sum = (k) => ok.reduce((s, q) => s + (q[k] || 0), 0);
   return {
-    // `limit` is absent for accounts with unlimited storage.
-    limit: q.limit ? Number(q.limit) : null,
-    usage: Number(q.usage || 0),
-    usageInDrive: Number(q.usageInDrive || 0),
-    usageInDriveTrash: Number(q.usageInDriveTrash || 0),
+    limit: ok.some((q) => q.limit == null) ? null : sum('limit'),
+    usage: sum('usage'),
+    usageInDrive: sum('usageInDrive'),
+    usageInDriveTrash: sum('usageInDriveTrash'),
+    accounts: ok,
   };
+}
+
+function freeSpace(acct) {
+  const q = quotas.get(acct);
+  if (!q || q.limit == null) return Infinity; // unknown or unlimited: worth a try
+  return q.limit - q.usage - (reserved.get(acct) || 0);
+}
+
+/** First account (primary first) with room for `bytes`, skipping `exclude`. */
+export function pickUploadAccount(bytes, exclude = new Set()) {
+  return connectedAccounts().find((acct) => !exclude.has(acct) && freeSpace(acct) >= bytes) || null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -201,9 +415,10 @@ export async function getQuota() {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Find the app's root folder, creating it on first login.
+ * Find the app's root folder in every connected account, creating it on
+ * first use, and join them into the pool's root group.
  *
- * Because of the drive.file scope this query can only ever match a folder the
+ * Because of the drive.file scope the lookup can only ever match a folder the
  * app created itself, so a user's own unrelated "DriveGallery" folder is never
  * picked up by mistake. `'root' in parents` limits it to the top of My Drive.
  */
@@ -213,7 +428,7 @@ export function findOrCreateRootFolder() {
   // Single-flight: concurrent callers (e.g. React StrictMode double-mounting)
   // share one lookup, otherwise both could miss and create two root folders.
   if (!rootFolderPromise) {
-    rootFolderPromise = lookupOrCreateRoot().catch((e) => {
+    rootFolderPromise = setupRoots().catch((e) => {
       rootFolderPromise = null;
       throw e;
     });
@@ -221,26 +436,62 @@ export function findOrCreateRootFolder() {
   return rootFolderPromise;
 }
 
-/** Forget the cached root folder (on sign-out, the next user has their own). */
-export function resetRootFolder() {
-  rootFolderPromise = null;
+async function setupRoots() {
+  const accts = connectedAccounts();
+  const roots = await Promise.all(
+    accts.map((acct, i) =>
+      lookupOrCreateRoot(acct).catch((e) => {
+        if (i === 0) throw e; // the primary account must work
+        return null;
+      }),
+    ),
+  );
+  const primary = roots[0];
+  rootKey = primary.id;
+  groups.set(rootKey, { name: primary.name, parent: null, ids: {}, checked: new Set(accts) });
+  roots.forEach((r, i) => {
+    if (!r) return;
+    groups.get(rootKey).ids[accts[i]] = r.id;
+    alias.set(r.id, rootKey);
+  });
+  return { ...primary, id: rootKey, parents: [], _acct: accts[0] };
 }
 
-async function lookupOrCreateRoot() {
+async function lookupOrCreateRoot(acct) {
   const q = `name='${esc(ROOT_FOLDER_NAME)}' and mimeType='${FOLDER_MIME}' and 'root' in parents and trashed=false`;
   const data = await driveFetch(
     `${API}/files?${qs({ q, fields: `files(${FILE_FIELDS})`, orderBy: 'createdTime', pageSize: 1, spaces: 'drive' })}`,
+    { acct },
   );
   if (data.files?.length) return data.files[0];
-  return createFolder(ROOT_FOLDER_NAME, 'root');
-}
-
-export async function createFolder(name, parentId) {
   return driveFetch(`${API}/files?fields=${encodeURIComponent(FILE_FIELDS)}`, {
+    acct,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
+    body: JSON.stringify({ name: ROOT_FOLDER_NAME, mimeType: FOLDER_MIME, parents: ['root'] }),
   });
+}
+
+async function findFolder(acct, name, parentId, signal) {
+  const q = `'${esc(parentId)}' in parents and name='${esc(name)}' and mimeType='${FOLDER_MIME}' and trashed=false`;
+  const data = await driveFetch(`${API}/files?${qs({ q, fields: 'files(id,name)', orderBy: 'createdTime', pageSize: 1 })}`, {
+    acct,
+    signal,
+  });
+  return data.files?.[0] || null;
+}
+
+/** New folders go in the primary account; other accounts get it on demand. */
+export async function createFolder(name, parentId) {
+  const acct = primaryAccount();
+  const parent = await ensureFolderIn(parentId, acct);
+  const f = await driveFetch(`${API}/files?fields=${encodeURIComponent(FILE_FIELDS)}`, {
+    acct,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parent] }),
+  });
+  return tag(f, acct);
 }
 
 const SORT_KEYS = {
@@ -249,8 +500,24 @@ const SORT_KEYS = {
   size: 'quotaBytesUsed',
 };
 
+/** Tag a batch from several accounts, merging folder groups that show up more than once. */
+function mergeTagged(batches) {
+  const seen = new Set();
+  const out = [];
+  for (const { acct, files } of batches) {
+    for (const f of files || []) {
+      const t = tag(f, acct);
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 /**
- * List one page of a folder (or search across the whole app).
+ * List one page of a folder (or search across the whole app), across every
+ * account in the pool.
  *
  * Drive search query syntax: https://developers.google.com/drive/api/guides/search-files
  *   "'FOLDER_ID' in parents"   → direct children of that folder only (not recursive)
@@ -260,70 +527,136 @@ const SORT_KEYS = {
  *
  * orderBy starts with `folder` so folders are grouped before files on every
  * page; without it a folder could show up on page 3 between two photos.
+ *
+ * Each account pages independently, so `nextPageToken` here is a JSON map of
+ * account → that account's Drive pageToken. Callers sort the merged list.
  */
 export async function listFiles({ folderId, search, filter = 'all', sort = 'name', direction = 'asc', pageToken, pageSize = 60, signal }) {
-  const clauses = ['trashed=false'];
-  // A search spans all of DriveGallery. drive.file already limits results to
-  // files the app created, so no parent clause is needed.
-  if (!search) clauses.push(`'${esc(folderId)}' in parents`);
-  if (search) clauses.push(`name contains '${esc(search)}'`);
-  if (filter === 'images') clauses.push(`(mimeType contains 'image/' or mimeType='${FOLDER_MIME}')`);
-  else if (filter === 'videos') clauses.push(`(mimeType contains 'video/' or mimeType='${FOLDER_MIME}')`);
-  else clauses.push(`(mimeType contains 'image/' or mimeType contains 'video/' or mimeType='${FOLDER_MIME}')`);
+  const base = ['trashed=false'];
+  if (search) base.push(`name contains '${esc(search)}'`);
+  if (filter === 'images') base.push(`(mimeType contains 'image/' or mimeType='${FOLDER_MIME}')`);
+  else if (filter === 'videos') base.push(`(mimeType contains 'video/' or mimeType='${FOLDER_MIME}')`);
+  else base.push(`(mimeType contains 'image/' or mimeType contains 'video/' or mimeType='${FOLDER_MIME}')`);
+
+  // A search spans all of DriveGallery in every account. drive.file already
+  // limits results to files the app created, so no parent clause is needed.
+  let targets = search ? connectedAccounts().map((acct) => ({ acct })) : await membersOf(folderId);
+  if (pageToken) {
+    const tokens = JSON.parse(pageToken);
+    targets = targets.filter((t) => tokens[t.acct]).map((t) => ({ ...t, pageToken: tokens[t.acct] }));
+  }
 
   const key = SORT_KEYS[sort] || 'name_natural';
   const orderBy = `folder,${key}${direction === 'desc' ? ' desc' : ''}`;
 
-  return driveFetch(
-    `${API}/files?${qs({
-      q: clauses.join(' and '),
-      orderBy,
-      pageSize,
-      pageToken,
-      spaces: 'drive',
-      fields: `nextPageToken,files(${FILE_FIELDS})`,
-    })}`,
-    { signal },
+  const pages = await Promise.all(
+    targets.map(async (t) => {
+      const clauses = t.id ? [...base, `'${esc(t.id)}' in parents`] : base;
+      const data = await driveFetch(
+        `${API}/files?${qs({
+          q: clauses.join(' and '),
+          orderBy,
+          pageSize,
+          pageToken: t.pageToken,
+          spaces: 'drive',
+          fields: `nextPageToken,files(${FILE_FIELDS})`,
+        })}`,
+        { acct: t.acct, signal },
+      );
+      return { acct: t.acct, files: data.files, next: data.nextPageToken };
+    }),
   );
+
+  const next = Object.fromEntries(pages.filter((p) => p.next).map((p) => [p.acct, p.next]));
+  return { files: mergeTagged(pages), nextPageToken: Object.keys(next).length ? JSON.stringify(next) : null };
 }
 
 /** All direct sub-folders of a folder (used by the sidebar and MoveDialog). */
 export async function listSubfolders(parentId, { signal } = {}) {
-  const out = [];
-  let pageToken;
-  do {
-    const data = await driveFetch(
-      `${API}/files?${qs({
-        q: `'${esc(parentId)}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
-        orderBy: 'name_natural',
-        pageSize: 200,
-        pageToken,
-        fields: `nextPageToken,files(${FILE_FIELDS})`,
-      })}`,
-      { signal },
-    );
-    out.push(...(data.files || []));
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-  return out;
-}
-
-export async function getFile(fileId) {
-  return driveFetch(`${API}/files/${fileId}?fields=${encodeURIComponent(FILE_FIELDS)}`);
+  const members = await membersOf(parentId);
+  const batches = await Promise.all(
+    members.map(async ({ acct, id }) => {
+      const files = [];
+      let pageToken;
+      do {
+        const data = await driveFetch(
+          `${API}/files?${qs({
+            q: `'${esc(id)}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+            orderBy: 'name_natural',
+            pageSize: 200,
+            pageToken,
+            fields: `nextPageToken,files(${FILE_FIELDS})`,
+          })}`,
+          { acct, signal },
+        );
+        files.push(...(data.files || []));
+        pageToken = data.nextPageToken;
+      } while (pageToken);
+      return { acct, files };
+    }),
+  );
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  return mergeTagged(batches).sort((a, b) => collator.compare(a.name, b.name));
 }
 
 /**
- * Walk up the `parents` chain from a folder to the app root and return the
- * breadcrumb path [root, ..., folder]. Used after a search, where we only know
- * the folder's id.
+ * Metadata for a file or folder group. If we don't know which account a file
+ * is in (e.g. a favorite saved in an earlier session), try each in turn.
+ */
+export async function getFile(fileId) {
+  const url = (id) => `${API}/files/${id}?fields=${encodeURIComponent(FILE_FIELDS)}`;
+  const g = groups.get(fileId);
+  if (g) {
+    const [acct, id] = Object.entries(g.ids)[0] || [];
+    if (acct) return tag(await driveFetch(url(id), { acct }), acct);
+  }
+  const known = fileAccount.get(fileId);
+  const order = known ? [known] : connectedAccounts();
+  let lastErr;
+  for (const acct of order) {
+    try {
+      return tag(await driveFetch(url(fileId), { acct }), acct);
+    } catch (e) {
+      if (isAbortError(e) || ![403, 404].includes(e.status)) throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr || new DriveError('Not found', { status: 404, reason: 'notFound' });
+}
+
+/**
+ * Breadcrumb path [root, ..., folder] for a folder group. Uses the groups we
+ * already know; otherwise walks up the real `parents` chain in the folder's
+ * account (e.g. after a search) and links each step into the pool.
  */
 export async function getFolderPath(folderId, rootId) {
-  const path = [];
-  let id = folderId;
+  const chain = [];
+  for (let k = folderId, depth = 0; k && depth < 32; depth++) {
+    const g = groups.get(k);
+    if (!g) break;
+    chain.unshift({ id: k, name: g.name });
+    if (k === rootId) return chain;
+    k = g.parent;
+  }
+
+  const g0 = groups.get(folderId);
+  const [acct, startId] = g0 ? Object.entries(g0.ids)[0] || [] : [primaryAccount(), folderId];
+  const rootId_ = groups.get(rootId)?.ids[acct];
+  if (!acct || !rootId_) return null;
+  const raws = [];
+  let id = startId;
   for (let depth = 0; id && depth < 32; depth++) {
-    const f = await driveFetch(`${API}/files/${id}?fields=id,name,parents`);
-    path.unshift({ id: f.id, name: f.name });
-    if (f.id === rootId) return path;
+    if (id === rootId_) {
+      const path = [{ id: rootId, name: groups.get(rootId).name }];
+      let parentKey = rootId;
+      for (const f of raws) {
+        parentKey = linkFolder(f, acct, parentKey);
+        path.push({ id: parentKey, name: f.name });
+      }
+      return path;
+    }
+    const f = await driveFetch(`${API}/files/${id}?fields=id,name,parents`, { acct });
+    raws.unshift(f);
     id = f.parents?.[0];
   }
   // Fell off the top without meeting the root: the folder lives outside the app.
@@ -334,12 +667,26 @@ export async function getFolderPath(folderId, rootId) {
 /* Update                                                                    */
 /* ------------------------------------------------------------------------ */
 
+/** Rename a file, or every member of a folder group so they stay merged. */
 export async function renameFile(fileId, name) {
-  return driveFetch(`${API}/files/${fileId}?fields=${encodeURIComponent(FILE_FIELDS)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
+  const members = await membersOf(fileId);
+  const results = await Promise.all(
+    members.map(({ acct, id }) =>
+      driveFetch(`${API}/files/${id}?fields=${encodeURIComponent(FILE_FIELDS)}`, {
+        acct,
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }),
+    ),
+  );
+  const g = groups.get(fileId);
+  if (g) {
+    if (g.parent) childIndex.delete(childKey(g.parent, g.name));
+    g.name = name;
+    if (g.parent) childIndex.set(childKey(g.parent, name), fileId);
+  }
+  return tag(results[0], members[0].acct);
 }
 
 /**
@@ -351,33 +698,65 @@ export async function renameFile(fileId, name) {
  *   removeParents=OLD_ID1,OLD_ID2   → unlink it from its current folder(s)
  * Doing both in one request makes the move atomic. Since 2020 a file can only
  * have one parent, so removeParents is effectively the single current parent.
+ *
+ * In the pool, a file moves inside its own account (the target folder is
+ * created there if needed); a folder group moves every member.
  */
 export async function moveFile(fileId, newParentId, oldParents = []) {
-  return driveFetch(
-    `${API}/files/${fileId}?${qs({
-      addParents: newParentId,
-      removeParents: oldParents.join(','),
-      fields: FILE_FIELDS,
-    })}`,
-    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-  );
+  const members = await membersOf(fileId);
+  const results = [];
+  for (const { acct, id } of members) {
+    const target = await ensureFolderIn(newParentId, acct);
+    const old = oldParents.map((p) => groups.get(p)?.ids[acct] || p).filter((p) => !groups.has(p) || groups.get(p).ids[acct] === p);
+    results.push(
+      await driveFetch(
+        `${API}/files/${id}?${qs({
+          addParents: target,
+          removeParents: old.join(','),
+          fields: FILE_FIELDS,
+        })}`,
+        { acct, method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      ),
+    );
+  }
+  const g = groups.get(fileId);
+  if (g) {
+    if (g.parent) childIndex.delete(childKey(g.parent, g.name));
+    g.parent = newParentId;
+    childIndex.set(childKey(newParentId, g.name), fileId);
+  }
+  return tag(results[0], members[0].acct);
 }
 
 /** "Delete" = move to the Drive trash; the user can still recover it for 30 days. */
 export async function trashFile(fileId) {
-  return driveFetch(`${API}/files/${fileId}?fields=id`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ trashed: true }),
-  });
+  const members = await membersOf(fileId);
+  await Promise.all(
+    members.map(({ acct, id }) =>
+      driveFetch(`${API}/files/${id}?fields=id`, {
+        acct,
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true }),
+      }),
+    ),
+  );
+  return { id: fileId };
 }
 
 export async function restoreFile(fileId) {
-  return driveFetch(`${API}/files/${fileId}?fields=${encodeURIComponent(FILE_FIELDS)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ trashed: false }),
-  });
+  const members = await membersOf(fileId);
+  const results = await Promise.all(
+    members.map(({ acct, id }) =>
+      driveFetch(`${API}/files/${id}?fields=${encodeURIComponent(FILE_FIELDS)}`, {
+        acct,
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: false }),
+      }),
+    ),
+  );
+  return tag(results[0], members[0].acct);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -391,7 +770,7 @@ export async function restoreFile(fileId) {
  * `onProgress(loaded, total)` is driven by streaming the response body.
  */
 export async function downloadFile(fileId, { signal, onProgress, sizeHint } = {}) {
-  const res = await driveFetch(`${API}/files/${fileId}?alt=media`, { signal, raw: true });
+  const res = await driveFetch(`${API}/files/${fileId}?alt=media`, { acct: accountOf(fileId), signal, raw: true });
   const total = Number(res.headers.get('Content-Length')) || Number(sizeHint) || 0;
   const type = res.headers.get('Content-Type') || 'application/octet-stream';
   if (!res.body || !onProgress) return res.blob();
@@ -420,6 +799,7 @@ export async function downloadFile(fileId, { signal, onProgress, sizeHint } = {}
  * we fall back to downloading the original for reasonably small images.
  */
 export async function fetchThumbnail(file, { size = 480, signal } = {}) {
+  const acct = file._acct || accountOf(file.id);
   if (file.thumbnailLink) {
     // Thumbnail links end in "=s220"; ask the CDN for a sharper size.
     const url = file.thumbnailLink.replace(/=s\d+(-c)?$/, `=s${size}`);
@@ -430,7 +810,7 @@ export async function fetchThumbnail(file, { size = 480, signal } = {}) {
       if (isAbortError(e)) throw e;
     }
     try {
-      const res = await driveFetch(url, { signal, raw: true });
+      const res = await driveFetch(url, { acct, signal, raw: true });
       return await res.blob();
     } catch (e) {
       if (isAbortError(e)) throw e;
@@ -510,12 +890,13 @@ function xhrError(res) {
 }
 
 /** XHR with the same 401 → refresh → retry behaviour as driveFetch. */
-async function authedXhr(opts) {
+async function authedXhr({ acct, ...opts }) {
+  acct = acct || primaryAccount();
   for (let refreshed = false; ; refreshed = true) {
-    const token = await tokenProvider.getToken();
+    const token = await tokenProvider.getToken(acct);
     const res = await xhr({ ...opts, headers: { ...opts.headers, Authorization: `Bearer ${token}` } });
     if (res.status === 401 && !refreshed) {
-      await tokenProvider.refreshToken();
+      await tokenProvider.refreshToken(acct);
       continue;
     }
     return res;
@@ -526,7 +907,7 @@ async function authedXhr(opts) {
  * Simple upload (uploadType=multipart) for small files: metadata and content
  * go in one multipart/related request.
  */
-export async function uploadSimple({ file, name, mimeType, parentId, signal, onProgress }) {
+export async function uploadSimple({ acct, file, name, mimeType, parentId, signal, onProgress }) {
   const boundary = 'dg' + Math.random().toString(36).slice(2);
   const metadata = { name, mimeType, parents: [parentId] };
   const body = new Blob([
@@ -537,6 +918,7 @@ export async function uploadSimple({ file, name, mimeType, parentId, signal, onP
     `\r\n--${boundary}--`,
   ]);
   const res = await authedXhr({
+    acct,
     method: 'POST',
     url: `${UPLOAD_API}/files?uploadType=multipart&fields=${encodeURIComponent(FILE_FIELDS)}`,
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
@@ -574,7 +956,7 @@ export async function uploadSimple({ file, name, mimeType, parentId, signal, onP
  * `onSession(uri)` lets the caller keep the session URI so that a manual
  * "Retry" after a failure resumes instead of re-uploading from zero.
  */
-export async function uploadResumable({ file, name, mimeType, parentId, signal, onProgress, sessionUri, onSession }) {
+export async function uploadResumable({ acct, file, name, mimeType, parentId, signal, onProgress, sessionUri, onSession }) {
   const total = file.size;
   const resuming = Boolean(sessionUri);
 
@@ -583,6 +965,7 @@ export async function uploadResumable({ file, name, mimeType, parentId, signal, 
     const init = await driveFetch(
       `${UPLOAD_API}/files?uploadType=resumable&fields=${encodeURIComponent(FILE_FIELDS)}`,
       {
+        acct,
         method: 'POST',
         signal,
         raw: true,
@@ -610,6 +993,7 @@ export async function uploadResumable({ file, name, mimeType, parentId, signal, 
   // --- 3. Ask Drive how many bytes it already has --------------------------
   const queryOffset = async (fallback) => {
     const res = await authedXhr({
+      acct,
       method: 'PUT',
       url: sessionUri,
       headers: { 'Content-Range': `bytes */${total}` },
@@ -644,6 +1028,7 @@ export async function uploadResumable({ file, name, mimeType, parentId, signal, 
     let res;
     try {
       res = await authedXhr({
+        acct,
         method: 'PUT',
         url: sessionUri,
         // Zero-byte files: Drive expects "bytes */0".
@@ -697,6 +1082,63 @@ export async function uploadResumable({ file, name, mimeType, parentId, signal, 
       if (isAbortError(e) || e.reason === 'sessionExpired') throw e;
       // Probe failed too; loop around and retry the same chunk.
       offset = chunkStart;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Pooled upload                                                             */
+/* ------------------------------------------------------------------------ */
+
+const isQuotaError = (e) => e?.reason === 'storageQuotaExceeded' || e?.reason === 'quotaExceeded';
+
+/**
+ * Upload into folder group `parentId`, choosing the account:
+ *  - the first connected account (primary first) with room for the file;
+ *  - if Drive still says that account is full, mark it full and try the next.
+ * The target folder is created in the chosen account if it isn't there yet.
+ *
+ * `session` / `onSession` carry { acct, uri } for resumable uploads so a retry
+ * resumes in the same account instead of starting over somewhere else.
+ * Resolves to the new file, tagged for the UI.
+ */
+export async function uploadToPool({ file, name, mimeType, parentId, signal, onProgress, session, onSession }) {
+  const resumable = mimeType.startsWith('video/') || file.size > RESUMABLE_THRESHOLD;
+  const tried = new Set();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const acct = (session && connectedAccounts().includes(session.acct) && session.acct) || pickUploadAccount(file.size, tried);
+    if (!acct) {
+      throw new DriveError('Every linked Google account is full.', { reason: 'storageQuotaExceeded' });
+    }
+    reserved.set(acct, (reserved.get(acct) || 0) + file.size);
+    try {
+      const folder = await ensureFolderIn(parentId, acct);
+      const opts = { acct, file, name, mimeType, parentId: folder, signal, onProgress };
+      const raw = resumable
+        ? await uploadResumable({
+            ...opts,
+            sessionUri: session?.acct === acct ? session.uri : null,
+            onSession: (uri) => {
+              session = uri ? { acct, uri } : null;
+              onSession?.(session);
+            },
+          })
+        : await uploadSimple(opts);
+      const q = quotas.get(acct);
+      if (q) q.usage += Number(raw.quotaBytesUsed || raw.size || file.size);
+      return tag(raw, acct);
+    } catch (e) {
+      if (!isQuotaError(e)) throw e;
+      // This account is full after all: remember that and try the next one.
+      const q = quotas.get(acct);
+      if (q && q.limit != null) q.usage = q.limit;
+      tried.add(acct);
+      session = null;
+      onSession?.(null);
+      onProgress?.(0, file.size);
+    } finally {
+      reserved.set(acct, (reserved.get(acct) || 0) - file.size);
     }
   }
 }

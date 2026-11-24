@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isAbortError, RESUMABLE_THRESHOLD, uploadResumable, uploadSimple } from '../lib/drive';
+import { isAbortError, uploadToPool } from '../lib/drive';
 import { compressImage } from '../lib/compress';
 
 const MAX_CONCURRENT = 3;
@@ -18,7 +18,7 @@ let seq = 0;
  */
 export function useUploadQueue({ onUploaded, onError } = {}) {
   const [items, setItems] = useState([]);
-  const jobs = useRef(new Map()); // id → { file, controller, sessionUri, compress }
+  const jobs = useRef(new Map()); // id → { file, controller, session: { acct, uri }, compress, prepared }
   const running = useRef(new Set());
   const callbacks = useRef({ onUploaded, onError });
   callbacks.current = { onUploaded, onError };
@@ -30,7 +30,7 @@ export function useUploadQueue({ onUploaded, onError } = {}) {
   const addFiles = useCallback((files, folderId, { compress = false } = {}) => {
     const added = [...files].map((file) => {
       const id = `u${++seq}`;
-      jobs.current.set(id, { file, compress, sessionUri: null });
+      jobs.current.set(id, { file, compress, session: null });
       return {
         id,
         name: file.name,
@@ -58,7 +58,7 @@ export function useUploadQueue({ onUploaded, onError } = {}) {
 
       try {
         let file = job.file;
-        if (job.compress && file.type.startsWith('image/') && !job.sessionUri) {
+        if (job.compress && file.type.startsWith('image/') && !job.session && !job.prepared) {
           patch(item.id, { status: 'preparing' });
           file = await compressImage(file);
           job.prepared = file;
@@ -89,20 +89,19 @@ export function useUploadQueue({ onUploaded, onError } = {}) {
           }
         };
 
-        const opts = {
+        // The pool picks the Google account with room for this file.
+        const result = await uploadToPool({
           file,
-          name: job.file.name, // preserve the original filename + extension
+          name: file.name, // compression may switch the extension to .webp
           mimeType: file.type || 'application/octet-stream',
           parentId: item.folderId,
           signal,
           onProgress,
-        };
-        const useResumable = file.type.startsWith('video/') || file.size > RESUMABLE_THRESHOLD;
-        const result = useResumable
-          ? await uploadResumable({ ...opts, sessionUri: job.sessionUri, onSession: (uri) => (job.sessionUri = uri) })
-          : await uploadSimple(opts);
+          session: job.session,
+          onSession: (s) => (job.session = s),
+        });
 
-        patch(item.id, { status: 'done', loaded: file.size, speed: 0 });
+        patch(item.id, { status: 'done', name: file.name, loaded: file.size, speed: 0 });
         jobs.current.delete(item.id);
         callbacks.current.onUploaded?.(result, item.folderId);
       } catch (e) {

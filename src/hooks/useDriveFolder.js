@@ -83,9 +83,10 @@ export function useDriveFolder({ folderId, search = '', filter = 'all', sort = '
     try {
       const data = await listFiles({ folderId, search, filter, sort, direction, pageToken });
       if (id !== req.current) return;
+      // Pages from several linked accounts interleave, so re-sort the merged list.
       setItems((prev) => {
         const seen = new Set(prev.map((f) => f.id));
-        return [...prev, ...clean(data.files).filter((f) => !seen.has(f.id))];
+        return [...prev, ...clean(data.files).filter((f) => !seen.has(f.id))].sort(makeComparator(sort, direction));
       });
       setPageToken(data.nextPageToken || null);
     } catch (e) {
