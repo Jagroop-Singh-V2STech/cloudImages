@@ -20,7 +20,7 @@ const rise = (delay) => ({
   transition: { duration: 0.6, ease: [0.25, 0.1, 0.25, 1], delay },
 });
 
-export default function Login() {
+export default function Login({ beam = false }) {
   const { signIn, status, ready, authError } = useAuth();
   const busy = status === 'signingIn';
 
@@ -32,10 +32,10 @@ export default function Login() {
         </motion.div>
 
         <motion.h1 className="mt-8 text-[36px] leading-[1.08] sm:text-[44px]" {...rise(0.06)}>
-          Welcome to DriveGallery
+          {beam ? 'Send to your laptop' : 'Welcome to DriveGallery'}
         </motion.h1>
         <motion.p className="mt-4 text-[17px] leading-snug text-muted" {...rise(0.12)}>
-          Your photos and videos, kept in your own Google&nbsp;Drive.
+          {beam ? 'Sign in with the same Google account as on your laptop.' : <>Your photos and videos, kept in your own Google&nbsp;Drive.</>}
         </motion.p>
 
         <motion.div className="mt-10 w-full max-w-[320px]" {...rise(0.18)}>

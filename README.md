@@ -20,6 +20,7 @@ Built with Vite, React, Tailwind CSS, framer-motion, `@react-oauth/google`, `rea
   - Linked accounts are handled by the **Cloudflare Worker**, which keeps each one's refresh token encrypted, so they **stay linked** across sign-outs, closed tabs and devices. They only need reconnecting if Google stops accepting the grant (access revoked, password change, or the 7-day limit of apps in *Testing* mode).
   - **Unlink** revokes that account's access; its files stay in its own Drive. Up to 9 extra accounts.
   - Without the Worker the app works as before with the main account only.
+- **Send from your phone.** On the laptop, click the phone icon next to **Upload** (or **Upload ▾ → Send from your phone…**) and scan the QR code with your phone. Sign in with the same Google account, choose photos from the phone's gallery, then **flick the phone toward the laptop** (or tap **Send**). The photos upload straight from the phone to Drive, into whatever folder the laptop has open, and appear on the laptop as they land. Needs the Worker (it hosts the pairing room) and HTTPS (motion sensors only work on secure pages; iPhones ask once for motion access).
 - **Storage** card in the sidebar: pooled usage with a bar split by account, and a **Google accounts** dialog with per-account usage, upload order and link / reconnect / unlink. It turns amber at 80% and red at 95%.
 - A light, minimal layout with a dark mode (System / Light / Dark toggle in the sidebar): a fixed sidebar (All media, Recents, Favorites, your folders, storage) that becomes a slide-in drawer on mobile. Animations respect `prefers-reduced-motion`.
 
@@ -136,6 +137,8 @@ npm run dev:worker
 
 6. Build the app with `VITE_LINK_API_URL` set to the Worker's URL (for example `https://drivegallery-links.<you>.workers.dev`).
 
+The same deploy creates the `BeamRoom` Durable Object used by **Send from your phone** (see `durable_objects` and `migrations` in `wrangler.jsonc`). It only relays small messages between the laptop and the phone; photos never pass through it. To try it from a real phone during development, the phone must reach the app over HTTPS on an origin listed in the OAuth client (for example a Cloudflare or ngrok tunnel to `localhost:5173`), since phones can't open the laptop's `localhost`.
+
 Keep `TOKEN_KEY` safe: if it changes, stored refresh tokens can't be decrypted and each linked account has to reconnect once.
 
 ## 3. Moving from Testing to production
@@ -163,7 +166,8 @@ Asking for a broader scope later, such as `drive.readonly` to show files the use
 ```
 worker/
   index.js          Cloudflare Worker for linked accounts: OAuth code flow + PKCE, encrypted
-                    refresh tokens in KV, /api/links, /api/token, /api/unlink
+                    refresh tokens in KV, /api/links, /api/token, /api/unlink; BeamRoom
+                    Durable Object relaying phone → laptop pairing messages (/api/beam/{room})
 src/
   lib/
     drive.js        All Drive API calls: list, folders, simple + resumable upload, rename,
@@ -171,6 +175,7 @@ src/
                     Centralized errors, 401 → refresh → retry, backoff on 429/5xx.
     mediaCache.js   Ref-counted blob: URL cache for thumbnails/media (revoked when unused)
     compress.js     Client-side image resize/re-encode
+    beam.js         Send from phone: pairing room ids, QR link, WebSocket with reconnect
     format.js, motion.js, dnd.js
   context/
     AuthContext.jsx Main token in memory, expiry tracking, silent refresh + "Session expired" fallback;
@@ -178,12 +183,14 @@ src/
     ToastContext.jsx
   hooks/
     useAuth, useDriveFolder (pagination + optimistic updates), useUploadQueue (3 concurrent),
+    useBeamHost (laptop side of Send from phone), useFlick (DeviceMotion flick detection),
     useSelection (checkbox + Shift-range), useMediaUrl (lazy thumbnails via IntersectionObserver),
     useCollection, useToast
   components/
     Login, Sidebar, TopBar, Breadcrumbs, FileGrid, FileList, FolderCard, MediaCard, Lightbox,
     UploadPanel, ContextMenu, MoveDialog, RenameDialog, ConfirmDialog, StorageCard, Toasts,
-    EmptyState, DropOverlay, SelectionBar, Skeletons, ui (Modal, Dropdown, Switch, …)
+    EmptyState, DropOverlay, SelectionBar, Skeletons, ui (Modal, Dropdown, Switch, …),
+    BeamDialog (QR + "Receiving…" pill), BeamSend (phone screen: pick, flick, send)
   Gallery.jsx       The signed-in workspace that wires everything together
 ```
 

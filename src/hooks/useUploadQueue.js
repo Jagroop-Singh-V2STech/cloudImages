@@ -45,7 +45,7 @@ export function useUploadQueue({ onUploaded, onError } = {}) {
       };
     });
     setItems((list) => [...list, ...added]);
-    return added.length;
+    return added.map((it) => it.id);
   }, []);
 
   const start = useCallback(
