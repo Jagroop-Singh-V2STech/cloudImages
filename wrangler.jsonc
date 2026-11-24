@@ -1,15 +1,16 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Linked-accounts API only. The app itself is a static site hosted anywhere.
-  "name": "drivegallery-links",
+  // Linked-accounts API and phone pairing rooms only. The app itself is a static site hosted anywhere.
+  "name": "misty-lake-3f3a",
   "main": "worker/index.js",
-  "compatibility_date": "2025-11-01",
-  // Create with: npx wrangler kv namespace create DG_KV  (then paste the id here).
-  // Local `wrangler dev` uses a simulated KV, so the placeholder is fine for development.
-  "kv_namespaces": [{ "binding": "DG_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }],
+  "compatibility_date": "2026-11-24",
+  "kv_namespaces": [{ "binding": "DG_KV", "id": "a5e1f43d7de84f2f98804c3f26b6a505" }],
+  // Pairing rooms for "Send from phone" (relays small messages; no storage used).
+  "durable_objects": { "bindings": [{ "name": "BEAM", "class_name": "BeamRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BeamRoom"] }],
   "vars": {
     // Where the app runs (comma-separated). Used for CORS and to report back from the popup.
-    "APP_ORIGINS": "https://gallery.example.com"
+    "APP_ORIGINS": "https://cloud-images-seven.vercel.app/"
   },
   "observability": { "enabled": true },
   "dev": { "port": 8787 }

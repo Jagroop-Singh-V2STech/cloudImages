@@ -21,6 +21,7 @@
  *   GET  /api/links                      → { accounts } (bearer)
  *   POST /api/token       { account, force? } → access token for a linked account (bearer)
  *   POST /api/unlink      { account }    → unlink and revoke (bearer)
+ *   GET  /api/beam/{room}?role=host|phone → WebSocket   phone → laptop pairing room
  *
  * KV layout (binding DG_KV)
  *   links:{owner}            [{ id, email, name, picture, needsReconnect }]
@@ -29,11 +30,18 @@
  *   bearer:{sha256(token)}   owner sub for a verified main-account token (until it expires)
  *   link:{state}             { owner, verifier, hint, consent }   (10 minutes)
  *
+ * Durable Object (binding BEAM): one BeamRoom per pairing room. It only relays
+ * small JSON messages (counts, file ids, the laptop's current folder) between
+ * the laptop and the phone; photos go from the phone straight to Google Drive.
+ * The room name is a 128-bit random id that only the laptop's QR code carries.
+ *
  * Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, TOKEN_KEY (base64, 32 bytes).
  * Vars:    APP_ORIGINS   optional; comma-separated origins of the app. Unset or "*" allows any origin
  *          WORKER_ORIGIN optional; overrides this Worker's public origin for the
  *                        redirect URI (local dev behind the Vite proxy)
  */
+
+import { DurableObject } from 'cloudflare:workers';
 
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
@@ -68,6 +76,8 @@ export default {
     };
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: ctx.cors });
+    // Phone → laptop pairing doesn't need the Google secrets, only the Durable Object.
+    if (url.pathname.startsWith('/api/beam/')) return beam(ctx);
     // Name (never reveal) whatever setting is missing, to make setup mistakes easy to spot.
     const missing = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'TOKEN_KEY', 'DG_KV'].filter((k) => !env[k]);
     if (missing.length) return json(ctx, { error: 'not_configured', missing }, 503);
@@ -324,6 +334,79 @@ async function unlink(ctx, owner) {
   await Promise.all([env.DG_KV.delete(tokKey), env.DG_KV.delete(`at:${owner}:${account}`)]);
   await env.DG_KV.put(`links:${owner}`, JSON.stringify(links.filter((l) => l.id !== account)));
   return json(ctx, { ok: true });
+}
+
+/* ------------------------------------------------------------------------ */
+/* Send from phone (pairing rooms)                                           */
+/* ------------------------------------------------------------------------ */
+
+const BEAM_ROOM = /^[A-Za-z0-9_-]{22,64}$/;
+const BEAM_MAX_SOCKETS = 6;
+const BEAM_MAX_MESSAGE = 4096;
+
+function beam(ctx) {
+  const { request, env, url } = ctx;
+  if (!env.BEAM) return json(ctx, { error: 'not_configured', missing: ['BEAM'] }, 503);
+  const room = url.pathname.slice('/api/beam/'.length);
+  if (!BEAM_ROOM.test(room)) return json(ctx, { error: 'bad_room' }, 400);
+  if (request.headers.get('Upgrade') !== 'websocket') return json(ctx, { error: 'expected_websocket' }, 426);
+  // Browsers always send Origin on WebSockets; only the app's own pages may join.
+  const origin = request.headers.get('Origin');
+  if (!ctx.allowAll && !ctx.appOrigins.includes(origin)) return json(ctx, { error: 'forbidden_origin' }, 403);
+  return env.BEAM.get(env.BEAM.idFromName(room)).fetch(request);
+}
+
+/**
+ * A pairing room: relays every text message to the other sockets in the room
+ * and announces who joins and leaves. Uses the hibernation API, so an idle
+ * room costs nothing; it keeps no storage and disappears with its sockets.
+ */
+export class BeamRoom extends DurableObject {
+  constructor(state, env) {
+    super(state, env);
+    // Keep-alive pings are answered without waking the object.
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  async fetch(request) {
+    if (this.ctx.getWebSockets().length >= BEAM_MAX_SOCKETS) return new Response('room full', { status: 429 });
+    const role = new URL(request.url).searchParams.get('role') === 'host' ? 'host' : 'phone';
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server, [role]);
+    const others = this.ctx.getWebSockets().filter((ws) => ws !== server);
+    server.send(JSON.stringify({ type: 'peers', roles: others.map((ws) => this.ctx.getTags(ws)[0]) }));
+    this.relay(server, JSON.stringify({ type: 'peer', role, event: 'join' }));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(ws, message) {
+    if (typeof message !== 'string' || message.length > BEAM_MAX_MESSAGE) return;
+    this.relay(ws, message);
+  }
+
+  webSocketClose(ws, code) {
+    this.relay(ws, JSON.stringify({ type: 'peer', role: this.ctx.getTags(ws)[0], event: 'leave' }));
+    try {
+      ws.close(code === 1005 || code === 1006 ? 1000 : code, 'bye');
+    } catch {
+      /* already closed */
+    }
+  }
+
+  webSocketError(ws) {
+    this.webSocketClose(ws, 1011);
+  }
+
+  relay(from, message) {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === from) continue;
+      try {
+        ws.send(message);
+      } catch {
+        /* closing */
+      }
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------ */

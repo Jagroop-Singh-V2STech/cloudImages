@@ -7,6 +7,7 @@ import {
   downloadFile,
   findOrCreateRootFolder,
   friendlyError,
+  getFile,
   getFolderPath,
   getQuota,
   isAbortError,
@@ -28,6 +29,7 @@ import { useToast } from './hooks/useToast';
 import { useCollection } from './hooks/useCollection';
 import { useTheme } from './hooks/useTheme';
 import { useAuth } from './hooks/useAuth';
+import { useBeamHost } from './hooks/useBeamHost';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import Breadcrumbs from './components/Breadcrumbs';
@@ -46,6 +48,7 @@ import { SelectionBar } from './components/SelectionBar';
 import { GridSkeleton, ListSkeleton } from './components/Skeletons';
 import { Spinner } from './components/ui';
 import Logo from './components/Logo';
+import BeamDialog, { BeamIncoming } from './components/BeamDialog';
 
 const ACCEPT = { 'image/*': [], 'video/*': [] };
 const ROOT_LABEL = 'All media';
@@ -234,7 +237,8 @@ function Workspace({ root }) {
   const [creating, setCreating] = useState(null); // parent crumb for "New folder"
   const [moveItems, setMoveItems] = useState(null);
   const [confirm, setConfirm] = useState(null); // { items }
-  const anyDialog = Boolean(lightbox || menu || renameItem || creating || moveItems || confirm);
+  const [beamOpen, setBeamOpen] = useState(false); // "Send from your phone" QR dialog
+  const anyDialog = Boolean(lightbox || menu || renameItem || creating || moveItems || confirm || beamOpen);
 
   // Scroll to top when the folder/search changes.
   useEffect(() => {
@@ -272,7 +276,7 @@ function Workspace({ root }) {
         quotaToast();
         return;
       }
-      const n = queue.addFiles(files, current.id, { compress: !original });
+      const n = queue.addFiles(files, current.id, { compress: !original }).length;
       toast.info(`Uploading ${plural(n, 'file')} to ${current.id === root.id ? ROOT_LABEL : current.name}`, {
         description: formatBytes(bytes) + (original ? ' · original quality' : ''),
         duration: 2500,
@@ -290,6 +294,40 @@ function Workspace({ root }) {
     onDropRejected: (rejected) =>
       toast.error(`${plural(rejected.length, 'file')} skipped`, { description: 'Only images and videos can be uploaded.' }),
   });
+
+  /* ---------------- Send from phone ---------------- */
+
+  const beamRefresh = useRef(false); // a phone upload didn't map onto this view: reload when the batch ends
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const beam = useBeamHost({
+    target: useMemo(() => ({ folderId: current.id, folderName: current.id === root.id ? ROOT_LABEL : current.name }), [current, root.id]),
+    onUploaded: (id, folderId) => {
+      getFile(id)
+        .then((file) => {
+          folder.add(file);
+          recents.add(file);
+          if (folderId === currentRef.current.id && !file.parents?.includes(folderId)) beamRefresh.current = true;
+        })
+        .catch(() =>
+          toast.error('A photo from your phone didn’t show up', {
+            id: 'beam-account',
+            description: 'Make sure the phone is signed in with the same Google account.',
+          }),
+        );
+      refreshQuotaSoon();
+    },
+    onFailed: (name) => toast.error(`Your phone couldn’t upload ${name}`),
+    onDone: () => {
+      if (!beamRefresh.current) return;
+      beamRefresh.current = false;
+      folder.refresh();
+    },
+  });
+  const openBeam = useCallback(() => {
+    beam.start();
+    setBeamOpen(true);
+  }, [beam]);
 
   /* ---------------- Navigation ---------------- */
 
@@ -701,6 +739,8 @@ function Workspace({ root }) {
           search={searchInput}
           onSearch={setSearchInput}
           onUpload={openPicker}
+          onFromPhone={openBeam}
+          phoneConnected={beam.phone}
           original={original}
           onOriginalChange={setOriginal}
           onMenu={() => setMobileNav(true)}
@@ -760,6 +800,9 @@ function Workspace({ root }) {
       />
 
       <UploadPanel queue={queue} />
+
+      <BeamDialog open={beamOpen} onClose={() => setBeamOpen(false)} beam={beam} folderName={currentName} />
+      <BeamIncoming incoming={beam.incoming} />
 
       <ContextMenu menu={menu} onClose={() => setMenu(null)} onAction={runAction} isFavorite={favorites.has} />
 

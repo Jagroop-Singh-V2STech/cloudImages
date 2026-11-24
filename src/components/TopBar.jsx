@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ArrowDownNarrowWide, ArrowUpNarrowWide, Check, ChevronDown, FolderPlus, LayoutGrid, List, Menu, Search, X } from 'lucide-react';
+import { ArrowDownNarrowWide, ArrowUpNarrowWide, Check, ChevronDown, FolderPlus, LayoutGrid, List, Menu, Search, Smartphone, X } from 'lucide-react';
 import { Dropdown, Segmented, Switch } from './ui';
 
 const SORTS = [
@@ -75,7 +75,7 @@ export function SortMenu({ sort, direction, onChange }) {
 }
 
 /** Blue pill with a small attached options menu (original-quality toggle). */
-export function UploadButton({ onUpload, original, onOriginalChange }) {
+export function UploadButton({ onUpload, onFromPhone, original, onOriginalChange }) {
   return (
     <div className="flex shrink-0">
       <button className="btn-primary h-11 rounded-r-none pl-6 pr-4 text-[16px]" onClick={onUpload}>
@@ -100,6 +100,11 @@ export function UploadButton({ onUpload, original, onOriginalChange }) {
             <button className="menu-item mb-1" onClick={() => (onUpload(), close())}>
               Choose photos &amp; videos…
             </button>
+            {onFromPhone && (
+              <button className="menu-item mb-1 hidden md:flex" onClick={() => (onFromPhone(), close())}>
+                <Smartphone className="h-4 w-4" /> Send from your phone…
+              </button>
+            )}
             <div className="rounded-xl bg-surface p-3.5">
               <Switch
                 checked={original}
@@ -160,6 +165,8 @@ export default function TopBar({
   search,
   onSearch,
   onUpload,
+  onFromPhone,
+  phoneConnected = false,
   original,
   onOriginalChange,
   onMenu,
@@ -189,7 +196,19 @@ export default function TopBar({
         </div>
         <div className="flex items-center gap-3 lg:pt-1.5">
           <SearchBox value={search} onChange={onSearch} />
-          <UploadButton onUpload={onUpload} original={original} onOriginalChange={onOriginalChange} />
+          {onFromPhone && (
+            // Receiving is a laptop thing; on a phone you'd scan the code instead.
+            <button
+              className="icon-btn relative hidden h-11 w-11 shrink-0 md:flex"
+              onClick={onFromPhone}
+              aria-label={phoneConnected ? 'Phone connected: send from your phone' : 'Send from your phone'}
+              title="Send from your phone"
+            >
+              <Smartphone className="h-5 w-5" />
+              {phoneConnected && <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-page bg-success" />}
+            </button>
+          )}
+          <UploadButton onUpload={onUpload} onFromPhone={onFromPhone} original={original} onOriginalChange={onOriginalChange} />
         </div>
       </div>
 
